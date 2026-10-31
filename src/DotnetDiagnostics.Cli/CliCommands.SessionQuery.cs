@@ -521,6 +521,8 @@ internal static partial class CliCommands
                 return BuildResult(CpuSampleQueryDispatcher.RenderInlining(trace, handle, options.RootMethodFilter, topN), SerializeQuery);
             case CpuSampleQueryDispatcher.CodeVersionsView:
                 return BuildResult(CpuSampleQueryDispatcher.RenderCodeVersions(trace, handle, options.RootMethodFilter, topN), SerializeQuery);
+            case CpuSampleQueryDispatcher.HotspotVariabilityView:
+                return BuildResult(CpuSampleQueryDispatcher.RenderHotspotVariability(trace, handle), SerializeQuery);
             case CpuSampleQueryDispatcher.TriageView:
                 // triage (issue #812) defaults to a small, bundled "first look" row count rather than
                 // DefaultTopN, matching the MCP query_snapshot(view="triage") default.

@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
 using DotnetDiagnostics.Core.Comparison;
+using DotnetDiagnostics.Core.CpuSampling;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using ModelContextProtocol;
@@ -280,6 +281,96 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
         }
         budgetReport.Should().Contain(
             "existing `compare_to_baseline` output-schema delta is **0 bytes**");
+    }
+
+    [Fact]
+    public async Task CpuHotspotComparison_MeasuresExistingPlacementAndPayloadCost()
+    {
+        await using var client = await ConnectAsync();
+        var result = await client.ListToolsAsync(
+            new ListToolsRequestParams(),
+            cancellationToken: CancellationToken.None);
+        var current = ToolCatalogMeasurement.Measure(result);
+        var resultSchema = McpJsonUtilities.DefaultOptions.GetJsonSchemaAsNode(
+            typeof(CpuHotspotComparisonResult),
+            new JsonSchemaExporterOptions
+            {
+                TreatNullObliviousAsNonNullable = true,
+            });
+        var resultSchemaBytes = SerializedLength(resultSchema);
+        var actualCatalog = JsonSerializer.SerializeToNode(
+            result,
+            McpJsonUtilities.DefaultOptions)?.AsObject()
+            ?? throw new InvalidOperationException("Could not serialize the MCP tool catalog.");
+        var actualCompare = actualCatalog["tools"]!.AsArray()
+            .Select(tool => tool!.AsObject())
+            .Single(tool => tool["name"]!.GetValue<string>() == "compare_to_baseline");
+        var currentDataSchema = actualCompare["outputSchema"]!["properties"]!["data"]!.AsObject();
+        var projected = actualCatalog.DeepClone().AsObject();
+        var projectedCompare = projected["tools"]!.AsArray()
+            .Select(tool => tool!.AsObject())
+            .Single(tool => tool["name"]!.GetValue<string>() == "compare_to_baseline");
+        projectedCompare["outputSchema"]!["properties"]!["data"] = resultSchema.DeepClone();
+        var typedCatalogBytes = SerializedLength(projected);
+        var availableBytes = JsonSerializer.SerializeToUtf8Bytes(
+            RepresentativeCpuHotspotComparison.Available,
+            McpJsonUtilities.DefaultOptions).Length;
+        var incompatibleBytes = JsonSerializer.SerializeToUtf8Bytes(
+            RepresentativeCpuHotspotComparison.Incompatible,
+            McpJsonUtilities.DefaultOptions).Length;
+        var degradedBytes = JsonSerializer.SerializeToUtf8Bytes(
+            RepresentativeCpuHotspotComparison.Degraded,
+            McpJsonUtilities.DefaultOptions).Length;
+
+        _output.WriteLine(
+            $"CPU-hotspot current maximal catalog: {current.SerializedBytes:N0} bytes");
+        _output.WriteLine(
+            $"CPU-hotspot current default catalog: {current.DefaultCatalogBytes:N0} bytes");
+        _output.WriteLine(
+            "CPU-hotspot existing compare_to_baseline output-schema delta: +0 bytes");
+        _output.WriteLine(
+            $"CPU-hotspot typed result schema: {resultSchemaBytes:N0} bytes");
+        _output.WriteLine(
+            $"CPU-hotspot typed catalog projection: {typedCatalogBytes:N0} bytes " +
+            $"(delta +{typedCatalogBytes - current.SerializedBytes:N0})");
+        _output.WriteLine(
+            $"CPU-hotspot available payload: {availableBytes:N0} bytes");
+        _output.WriteLine(
+            $"CPU-hotspot incompatible payload: {incompatibleBytes:N0} bytes");
+        _output.WriteLine(
+            $"CPU-hotspot degraded payload: {degradedBytes:N0} bytes");
+
+        result.Tools.Should().HaveCount(17);
+        currentDataSchema.Should().BeEmpty(
+            "the existing compare_to_baseline data envelope accepts the Core result without adding a typed tools/list schema");
+        typedCatalogBytes.Should().BeGreaterThan(current.SerializedBytes,
+            "the avoided typed projection cost must be measured rather than assumed");
+        availableBytes.Should().BeLessThanOrEqualTo(24 * 1024);
+        incompatibleBytes.Should().BeLessThanOrEqualTo(24 * 1024);
+        degradedBytes.Should().BeLessThanOrEqualTo(24 * 1024);
+
+        var budgetReport = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "research",
+            "mcp-tool-catalog-budget.md"));
+        foreach (var measuredBytes in new[]
+                 {
+                     current.SerializedBytes,
+                     current.DefaultCatalogBytes,
+                     resultSchemaBytes,
+                     typedCatalogBytes,
+                     typedCatalogBytes - current.SerializedBytes,
+                     availableBytes,
+                     incompatibleBytes,
+                     degradedBytes,
+                 })
+        {
+            budgetReport.Should().Contain(
+                measuredBytes.ToString("N0", CultureInfo.InvariantCulture));
+        }
+        budgetReport.Should().Contain(
+            "CPU-hotspot existing `compare_to_baseline` output-schema delta is **0 bytes**");
     }
 
     [Fact]
@@ -792,6 +883,97 @@ internal static class RepresentativeRequestLatencyComparison
                         .Select(sample => offset + window * 0.1 + sample * 0.01)
                         .ToArray()))
                 .ToArray());
+}
+
+internal static class RepresentativeCpuHotspotComparison
+{
+    internal static CpuHotspotComparisonResult Available { get; } =
+        CpuHotspotComparison.Compare(
+            CaptureSet("baseline", [30, 31, 29, 30]),
+            CaptureSet("candidate", [60, 61, 59, 60]));
+
+    internal static CpuHotspotComparisonResult Incompatible { get; } =
+        CpuHotspotComparison.Compare(
+            CaptureSet("baseline", [30, 31, 29, 30]),
+            CaptureSet("candidate", [60, 61, 59, 60]) with
+            {
+                Identity = CaptureSet("candidate", [60, 61, 59, 60]).Identity with
+                {
+                    Workload = CaptureSet("candidate", [60, 61, 59, 60]).Identity.Workload with
+                    {
+                        OfferedLoad = 101,
+                    },
+                },
+            });
+
+    internal static CpuHotspotComparisonResult Degraded { get; } =
+        CpuHotspotComparison.Compare(
+            CaptureSet("baseline", [30, 31, 29, 30]),
+            CaptureSet("candidate", [60, 61, 59, 60], unresolvedSamples: 40));
+
+    private static CpuHotspotCaptureSet CaptureSet(
+        string axisValue,
+        int[] selectedSamples,
+        int unresolvedSamples = 5)
+        => new(
+            CpuHotspotCaptureSet.SchemaV1,
+            axisValue,
+            new(
+                new("CoreCLR", "same-major-minor", "linux", "x64"),
+                new(
+                    CpuSampleBackend.EventPipeSampleProfiler.ToString(),
+                    "1",
+                    CpuSampleEvidenceKind.StackFrequencyWithHeuristicWaits),
+                new(
+                    "cpu-hotspot-inclusive-share",
+                    "sample-share",
+                    "inclusive-stack-membership",
+                    "retained-total-samples",
+                    "none",
+                    "selected",
+                    CpuHotspotRepresentation.Exact),
+                new(5, "1ms", "top-16", "none"),
+                new("steady-load", "1", "route=/work", 100, "same-node"),
+                new("capture", "samples-within-capture", "pairKey"),
+                new("build", axisValue)),
+            selectedSamples.Select((samples, index) =>
+            {
+                var pairOrder = index % 2 == 0
+                    ? CpuHotspotPairOrder.BaselineFirst
+                    : CpuHotspotPairOrder.CandidateFirst;
+                var startedAt = DateTimeOffset.UnixEpoch.AddMinutes((index + 1) * 2);
+                if ((string.Equals(axisValue, "candidate", StringComparison.Ordinal)
+                        && pairOrder == CpuHotspotPairOrder.BaselineFirst)
+                    || (!string.Equals(axisValue, "candidate", StringComparison.Ordinal)
+                        && pairOrder == CpuHotspotPairOrder.CandidateFirst))
+                {
+                    startedAt = startedAt.AddSeconds(6);
+                }
+                var methods = new[]
+                {
+                    new CpuHotspotMethodObservation("selected", "Selected", samples),
+                    new CpuHotspotMethodObservation("other", "Other", 70 - samples),
+                    new CpuHotspotMethodObservation("third", "Third", 10),
+                };
+                return new CpuHotspotCaptureObservation(
+                    $"capture-{index + 1}",
+                    $"pair-{index + 1}",
+                    pairOrder,
+                    $"run-{index + 1}",
+                    new(
+                        CpuHotspotCaptureProfile.SchemaV1,
+                        1000 + index,
+                        startedAt,
+                        5,
+                        100,
+                        unresolvedSamples,
+                        CpuSampleBackend.EventPipeSampleProfiler,
+                        CpuSampleEvidenceKind.StackFrequencyWithHeuristicWaits,
+                        CpuHotspotRepresentation.Exact,
+                        methods.Length,
+                        0,
+                        methods));
+            }).ToArray());
 }
 
 internal sealed record ToolCatalogMeasurement(

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Memory;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
@@ -134,6 +136,13 @@ public sealed record CpuSampleTraceArtifact(
     /// Populated by the Windows ETW sampler.
     /// </summary>
     public NativeLeafCoverage? NativeLeafCoverage { get; init; }
+
+    /// <summary>
+    /// Optional bounded capture-level evidence for repeated hotspot comparison. Legacy artifacts
+    /// omit this block; absence means the evidence was not recorded and is never success-shaped.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CpuHotspotCaptureProfile? HotspotVariability { get; init; }
 
     private static readonly IReadOnlyDictionary<SymbolRef, SourceLocation> EmptyResolved
         = new Dictionary<SymbolRef, SourceLocation>();

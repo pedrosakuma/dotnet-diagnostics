@@ -56,6 +56,31 @@ invoke the comparison, rather than adding about 10.1 KB to every maximal `tools/
 response. The slightly larger incompatible payload is expected because it carries
 field-level identity mismatches and explicit unavailable-field reasons.
 
+### CPU-hotspot variability comparison placement (#1331)
+
+The CPU-hotspot variability path reuses `collect_sample`/`query_snapshot` for
+collection and the existing `compare_to_baseline.snapshotsJson` parameter for
+bounded repeated-capture comparison. It adds no tool and no parameter. The
+Core result remains in the tool's unconstrained `data` envelope, so the typed
+output schema does not expand.
+
+Measured against the source-generated result schema and representative
+available/incompatible/degraded results:
+
+- current maximal catalog: **283,845 bytes**
+- current default catalog: **250,677 bytes**
+- CPU-hotspot existing `compare_to_baseline` output-schema delta is **0 bytes**
+- standalone typed CPU-hotspot result schema: **15,593 bytes**
+- projected catalog if wired into the typed output schema:
+  **299,436 bytes** (**+15,591 bytes**)
+- representative available result payload: **10,019 bytes**
+- representative incompatible result payload: **9,141 bytes**
+- representative degraded result payload: **9,115 bytes**
+
+The bounded result is therefore paid only by callers that request this
+comparison. Adding it to the registered typed output schema would exceed the
+285,000-byte maximal-catalog ceiling.
+
 ## Reproduce
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)

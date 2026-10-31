@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using DotnetDiagnostics.Core;
 using DotnetDiagnostics.Core.Collection;
+using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.CpuSampling;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.NativeAlloc;
@@ -144,10 +145,11 @@ internal static class DiagnosticToolSampling
             return WithContext(ClassifyAttachFailure<CpuSample>("collect_sample", pid, ex), ctx);
         }
 
+        var artifact = CpuHotspotCaptureProjection.EnsureProfile(result.Artifact);
         var handle = handles.Register(
             pid,
             "cpu-sample",
-            result.Artifact,
+            artifact,
             CpuSampleHandleTtl,
             evictWhenProcessExits: false,
             origin: HandleOrigin.Live);

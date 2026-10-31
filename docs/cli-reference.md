@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"cpuHotspotComparison":{"version":1,"messageType":"compare","kind":"cpu-hotspot","inputSchema":"dotnet-diagnostics/cpu-hotspot-capture-set/v1","resultSchema":"dotnet-diagnostics/cpu-hotspot-comparison/v1","maxCapturesPerSide":12,"maxMethodsPerCapture":16},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -59,6 +59,20 @@ The correlated response is:
 ```json
 {"type":"comparison","requestId":"latency-1","kind":"request-latency","result":{"schema":"dotnet-diagnostics/request-latency-comparison/v1",...}}
 ```
+
+`cpuHotspotComparison` advertises the parallel bounded CPU-hotspot comparison.
+Send exactly two inline `dotnet-diagnostics/cpu-hotspot-capture-set/v1`
+objects:
+
+```json
+{"type":"compare","requestId":"cpu-1","kind":"cpu-hotspot","baseline":{...},"candidate":{...}}
+```
+
+The response carries
+`dotnet-diagnostics/cpu-hotspot-comparison/v1`. CPU `capture` frames also add
+the bounded `hotspotVariability` capture profile; clients may ignore that
+additive property. The CLI still performs the CPU collection in Core. VS Code
+must not collect EventPipe data or calculate these statistics in TypeScript.
 
 Malformed input returns a correlated `type="error"` frame. The control frame is
 bounded to 576 KiB so it can carry two maximum-size 256 KiB window sets plus
@@ -1553,6 +1567,48 @@ This output is objective evidence only. It emits no regression, improvement,
 significance, causation, equivalent-load, or operational-importance verdict.
 `--mode` does not apply, mixed request-latency/snapshot inputs are rejected, and
 more or fewer than two request-latency inputs are rejected.
+
+Exactly two `dotnet-diagnostics/cpu-hotspot-capture-set/v1` files select the
+Core-owned repeated-capture CPU-hotspot path:
+
+```bash
+dotnet-diagnostics-cli compare ./baseline-cpu.json ./candidate-cpu.json
+dotnet-diagnostics-cli compare ./baseline-cpu.json ./candidate-cpu.json --json
+dotnet-diagnostics-cli compare ./baseline-cpu.json ./candidate-cpu.json \
+  --save ./cpu-hotspot-comparison.json
+```
+
+The result schema is `dotnet-diagnostics/cpu-hotspot-comparison/v1`. One
+separately started and stopped compatible capture is the independence unit;
+samples within a capture are correlated observations. Each side accepts at
+most 12 captures, each capture profile retains at most 16 ranked methods, and
+each input file is limited to 256 KiB. At least four complete compatible pairs
+with at least 80 samples per capture are required for pooled movement evidence.
+
+Human, JSON, saved, and JSONL output preserve absolute total, selected-method,
+and unresolved-exclusive sample counts per capture. Available evidence reports
+capture-level median, R7 IQR and range for selected-method inclusive share and
+unresolved-exclusive share; ordered candidate-minus-baseline share deltas and
+their median; top-2 membership overlap; and selected-method rank stability.
+Shares remain fractions in JSON and are percentages only in human rendering.
+
+Compatibility is strict across target runtime/platform, backend and evidence
+kind, duration and capture protocol, quantity definition, selected method,
+workload and offered load, independence/pairing semantics, and comparison-axis
+name. Each matched pair also requires the same process-run identity, process
+ID, and pair order. Capture intervals for a process must not overlap, so a
+reused capture cannot inflate the independent pair count.
+Approximate/truncated profiles, excessive unresolved attribution,
+incomplete pairs, low counts, or a missing selected method produce explicit
+`unsupported_approximation`, `incompatible`, or
+`insufficient_observations` states; unavailable pooled fields remain `null` or
+empty rather than zero.
+
+The comparison never converts sample share to CPU time, treats samples as
+independent, normalizes by performance without offered-load evidence, or emits
+improvement, regression, significance, causation, health, or
+operational-importance verdicts. `--mode` does not apply and mixed schemas are
+rejected.
 
 Compare two or more saved comparable snapshots from `collect --save`. Human output keeps the compact verdict, first→last headline, and top metric/key deltas in the terminal; `--json` emits the full `SnapshotJourneyDiff`, and `--save` writes that full matrix to a file. Local MCP `compare_to_baseline` / `query_snapshot(view="diff")` calls use a `journey://diff/{handle}` Resource link when the matrix is large. Proxied pod calls return full results inline because dynamic pod Resources are not forwarded.
 

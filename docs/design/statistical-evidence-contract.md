@@ -248,6 +248,35 @@ lossy, incomplete, failed, aborted, unpaired, or incompatible evidence remains
 explicitly unavailable for paired inference. CLI and the existing MCP
 `compare_to_baseline` placement consume this same Core calculation.
 
+**Second shipping vertical slice (#1331):** Core owns the scenario-specific
+`dotnet-diagnostics/cpu-hotspot-capture/v1`,
+`dotnet-diagnostics/cpu-hotspot-capture-set/v1`, and
+`dotnet-diagnostics/cpu-hotspot-comparison/v1` contracts. One separately
+started and stopped compatible capture is the independence unit; individual
+samples never increase the inferential count. The bounded capture profile
+retains absolute total and unresolved-exclusive sample counts plus at most 16
+ranked method identities/counts. Four complete compatible pairs with at least
+80 samples per capture admit capture-level median, R7 IQR/range, paired
+selected-share deltas, top-2 overlap, and selected-method rank stability.
+
+Target/platform, backend/evidence semantics, duration/capture protocol,
+quantity, selected method, workload/offered load, independence/pairing, and
+comparison-axis compatibility are strict. Pair order and process-run identity
+and process ID must match within each pair, and capture intervals on a process
+must not overlap. Approximate or truncated representation and
+material unresolved attribution are explicit `unsupported_approximation`;
+missing/low/incomplete evidence is `insufficient_observations`; identity
+failures are `incompatible`. Counts and unresolved shares remain visible when
+pooling is withheld.
+
+This slice does not convert sample share to CPU time, treat samples inside a
+capture as independent, normalize performance without offered-load evidence,
+or emit movement thresholds, significance, improvement, regression,
+causation, health, or operational verdicts. CLI file/JSON/JSONL and the
+existing MCP comparison envelope consume the same Core result. MCP collection
+continues through the existing CPU sample/query surface, and VS Code continues
+through CLI JSONL rather than a TypeScript collector.
+
 ### 8.2 BenchmarkDotNet
 
 The BenchmarkDotNet project already references Core; Core must never reference

@@ -172,6 +172,22 @@ public sealed partial class CaptureArtifactCodecTests
     }
 
     [Fact]
+    public void Cpu_LegacySnapshotWithoutHotspotVariabilityRemainsReadable()
+    {
+        var enriched = DotnetDiagnostics.Core.Comparison.CpuHotspotCaptureProjection.EnsureProfile(Cpu());
+        var payload = JsonNode.Parse(CaptureArtifactCodec.Encode("cpu-sample", enriched, Budget))!;
+        payload["snapshot"]!.AsObject().Remove("HotspotVariability");
+
+        var restored = (CpuSampleTraceArtifact)CaptureArtifactCodec.Decode(
+            "cpu-sample",
+            1,
+            Encoding.UTF8.GetBytes(payload.ToJsonString()),
+            Budget);
+
+        restored.HotspotVariability.Should().BeNull();
+    }
+
+    [Fact]
     public void Cpu_DeepTreeIsFlatOnDiskAndPreservesEveryNodeAndIdentity()
     {
         var trace = Cpu();

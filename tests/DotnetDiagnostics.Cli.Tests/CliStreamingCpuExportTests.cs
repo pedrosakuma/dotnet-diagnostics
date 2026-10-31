@@ -46,6 +46,13 @@ public sealed class CliStreamingCpuExportTests : IDisposable
             $$"""{"type":"capture","requestId":"c","kind":"cpu","processId":{{Environment.ProcessId}},"exportTrace":{{(trace ? "true" : "false")}}}""",
             capture => Request(capture.GetProperty("exportHandle").GetString()!, "summary"));
         frames[0].GetProperty("result").GetProperty("totalSamples").GetInt64().Should().Be(10);
+        var hotspotVariability = frames[0].GetProperty("hotspotVariability");
+        hotspotVariability.GetProperty("schema").GetString()
+            .Should().Be(DotnetDiagnostics.Core.Comparison.CpuHotspotCaptureProfile.SchemaV1);
+        hotspotVariability.GetProperty("totalSamples").GetInt64().Should().Be(10);
+        hotspotVariability.GetProperty("methods").GetArrayLength()
+            .Should().BeLessThanOrEqualTo(
+                DotnetDiagnostics.Core.Comparison.CpuHotspotCaptureProjection.MaximumMethodsPerCapture);
         var exportHandle = frames[0].GetProperty("exportHandle").GetString();
         var evidence = frames[0].GetProperty("investigationEvidence");
         evidence.GetProperty("kind").GetString().Should().Be("cpu");

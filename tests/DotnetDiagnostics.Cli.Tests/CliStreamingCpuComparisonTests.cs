@@ -215,6 +215,34 @@ public sealed class CliStreamingCpuComparisonTests
     }
 
     [Fact]
+    public async Task QueryHotspotVariability_ReturnsRecordedBoundedProfile()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var artifact = CpuHotspotCaptureProjection.EnsureProfile(Artifact(
+            DateTimeOffset.UnixEpoch,
+            TimeSpan.FromSeconds(5),
+            CpuSampleEvidence.LinuxPerfOnCpu,
+            ("Shared", 100L)));
+        var handle = Register(store, "cpu-sample", artifact, TimeSpan.FromMinutes(10));
+
+        var frames = await RunAsync(
+            store,
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "query",
+                requestId = "variability",
+                handle = handle.Id,
+                view = CpuSampleQueryDispatcher.HotspotVariabilityView,
+            });
+
+        var result = frames[1].GetProperty("result");
+        result.GetProperty("data").GetProperty("schema").GetString()
+            .Should().Be(CpuHotspotCaptureProfile.SchemaV1);
+        result.GetProperty("summary").GetString().Should().Contain("correlated observations");
+    }
+
+    [Fact]
     public void CpuHandleWindow_RetainsExactlyLatestPair()
     {
         var store = new MemoryDiagnosticHandleStore(maxEntries: 8);
