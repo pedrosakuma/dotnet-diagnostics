@@ -1209,6 +1209,61 @@ See [networking correlation and capture quality](networking-correlation.md).
 | `--unsafe-provider` | `event_source`: opt in to a non-allowlisted provider. |
 | `--save <file>` | Save a comparable snapshot JSON. Supported collect kinds: `counters`, `datas` (`gc-datas`), `gc` (`gc-events`), `contention`, `threadpool`. |
 
+#### Managed-contention concentration evidence
+
+`collect --kind contention` adds a scenario-specific `concentration` block to the
+Core result and ordinary JSON output. JSONL capture frames expose the same record as
+`contentionConcentration`; human output prints the same availability, shape, counts,
+shares, quantiles, unavailable reasons, assumptions, and limitations.
+
+The block groups retained wait duration by the capture-local
+`(lockId, associatedObjectId)` identity and reports top-1 and top-3 shares. It also
+reports one-second active-window coverage and the existing bounded p50/p95/max wait
+quantiles. Positive waits with neither identity are explicitly unavailable and are
+never merged into a synthetic dominant lock. Small timestamp boundary skew is
+clamped into the first/last window; timestamps outside that bounded tolerance leave
+the temporal shape unavailable. The descriptive shape is:
+
+- `short_burst` when active windows are at most 50% of the bounded capture;
+- otherwise `dominant` when top-1 is at least 65% and top-3 is at least 80%;
+- otherwise `diffuse`;
+- `truncated_inventory` when the collector retained fewer events than it observed;
+- `bounded_capture_observed_no_contention` when a completed bounded capture observed
+  no contention events;
+- `unavailable` when the inputs cannot support a shape.
+
+These names prioritize the next contention drilldown only. They do not establish
+cause, severity, regression, starvation, or workload health. A no-contention capture
+does not substitute numeric zero for missing shares.
+
+One separately started capture is the independence unit. Events and one-second
+windows are nested descriptive evidence, not independent trials. Owner overlap is
+therefore `not_applicable` for an ordinary single capture and is reported only when
+the evaluator receives valid binary observations from separately started captures;
+its Wilson interval retains both positive and total capture counts. Source loss is
+nullable: when the runtime-side count is not observable, JSON uses `null` plus the
+stable `source_loss_not_observable` reason rather than zero. Known source loss makes
+the affected concentration and quantiles unavailable.
+
+The collector retains the 200 longest events. When `totalEvents` exceeds the retained
+event count, top-lock concentration is unavailable because shares over that ranked
+subset would be biased. The existing quantiles can remain available because their
+bounded sampler observes every delivered event independently of the retained event
+rows. Artifacts written before this additive block deserialize with
+`concentration: null`; the CLI labels the evidence unavailable and never backfills
+values from the older bounded rows.
+
+With the pinned SDK and serializer, the exact scenario-local evidence schema is
+4,917 UTF-8 bytes. Representative evidence payloads are 2,185 bytes (`available`),
+2,505 bytes (`truncated_inventory`), and 2,785 bytes
+(`bounded_capture_observed_no_contention`). A representative contention snapshot
+grows from 2,925 to 5,106 bytes, an additive 2,181 bytes. The MCP
+`collect_events(kind="contention")` projection preserves its prior wire shape and does
+not expose this block, so the measured maximal/default catalogs remain 283,845 /
+250,677 bytes: zero catalog growth and no new tool. BenchmarkDotNet continues to use
+the ordinary contention Core path, which leaves the nullable block unset and omits it
+from its null-suppressing JSON artifacts.
+
 CLI activity collection is exploratory by default: `--max-events` retains the first N
 completed stop events after source filtering (default 200). With `--trace-id`, it instead
 retains only matching spans up to the independent `--max-matched-activities` budget;

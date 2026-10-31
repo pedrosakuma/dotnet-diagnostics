@@ -784,6 +784,47 @@ public static class EventCollectionUseCases
         int durationSeconds = 10,
         SamplingDepth depth = SamplingDepth.Summary,
         CancellationToken cancellationToken = default)
+        => CollectContentionCore(
+            collector,
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            includeConcentration: false,
+            cancellationToken);
+
+    /// <summary>
+    /// Aggregates contention and attaches the scenario-specific bounded concentration evidence
+    /// used by the standalone CLI.
+    /// </summary>
+    public static Task<DiagnosticResult<ContentionSnapshot>> CollectContentionWithConcentration(
+        IContentionCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId = null,
+        int durationSeconds = 10,
+        SamplingDepth depth = SamplingDepth.Summary,
+        CancellationToken cancellationToken = default)
+        => CollectContentionCore(
+            collector,
+            resolver,
+            handles,
+            processId,
+            durationSeconds,
+            depth,
+            includeConcentration: true,
+            cancellationToken);
+
+    private static Task<DiagnosticResult<ContentionSnapshot>> CollectContentionCore(
+        IContentionCollector collector,
+        IProcessContextResolver resolver,
+        IDiagnosticHandleStore handles,
+        int? processId,
+        int durationSeconds,
+        SamplingDepth depth,
+        bool includeConcentration,
+        CancellationToken cancellationToken)
         => ExecuteCollectionAsync(
             resolver,
             handles,
@@ -791,7 +832,19 @@ public static class EventCollectionUseCases
             durationSeconds,
             depth,
             new HandledCollectionStrategy<ContentionSnapshot>(
-                CollectAsync: (pid, ct) => collector.CollectAsync(pid, TimeSpan.FromSeconds(durationSeconds), ct),
+                CollectAsync: async (pid, ct) =>
+                {
+                    var snapshot = await collector.CollectAsync(
+                        pid,
+                        TimeSpan.FromSeconds(durationSeconds),
+                        ct).ConfigureAwait(false);
+                    return includeConcentration
+                        ? snapshot with
+                        {
+                            Concentration = ContentionConcentrationEvaluator.Evaluate(snapshot),
+                        }
+                        : snapshot;
+                },
                 RegisterHandle: static (store, pid, snap) => RegisterHandle(store, pid, CollectionHandleKinds.ContentionSnapshot, snap, evictWhenProcessExits: false),
                 BuildResult: (snapshot, handle, context) =>
                 {

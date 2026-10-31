@@ -457,6 +457,31 @@ Therefore:
 - a shared record after two vertical slices requires a deliberate catalog-budget
   decision or a proven reusable-schema mechanism, not an assumption that shared
   result types cost zero;
+
+### 13.1 First vertical slice: contention concentration
+
+Issue #1319 implements a scenario-specific Core result and CLI projection rather than
+the synthetic shared record above. On the same pinned SDK/serializer:
+
+| Measurement | UTF-8 bytes |
+|---|---:|
+| `ContentionConcentrationEvidence` JSON schema | 4,917 |
+| Representative `available` evidence payload | 2,185 |
+| Representative `truncated_inventory` evidence payload | 2,505 |
+| Representative `bounded_capture_observed_no_contention` evidence payload | 2,785 |
+| Representative contention snapshot without evidence | 2,925 |
+| Representative contention snapshot with evidence | 5,106 |
+| Representative snapshot increase | 2,181 |
+| Maximal/default MCP catalog increase | 0 / 0 |
+
+The maximal/default catalogs remain 283,845 / 250,677 bytes. The existing
+`collect_events(kind="contention")` wire result uses a projection with the prior
+contention fields and deliberately excludes the new Core/CLI block. This preserves
+the approved MCP surface and demonstrates the intended vertical-slice rule: measure
+the scenario contract at its actual placement instead of paying repeated generated
+schema cost for an unapproved universal DTO. The standalone CLI opts into a dedicated
+Core collection path; the ordinary path used by MCP and BenchmarkDotNet leaves the
+block unset, preserving their existing behavior.
 - opaque/untyped MCP data is not an automatic workaround when clients need stable
   evidence semantics.
 

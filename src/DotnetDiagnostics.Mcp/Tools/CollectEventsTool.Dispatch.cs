@@ -389,7 +389,7 @@ public sealed partial class CollectEventsTool
                 effectiveDuration,
                 context.Depth,
                 ct),
-            (env, data) => env with { Contention = data },
+            (env, data) => env with { Contention = CollectEventsContentionSnapshot.From(data) },
             cancellationToken);
 
     private static Task<DiagnosticResult<CollectEventsEnvelope>> RunDbAsync(CollectEventsDispatchContext context, int effectiveDuration, CancellationToken cancellationToken)
