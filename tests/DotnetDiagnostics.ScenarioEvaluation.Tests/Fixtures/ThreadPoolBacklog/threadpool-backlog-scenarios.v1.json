@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "id": "threadpool-backlog-bounded-windows-v1",
+  "cases": [
+    {
+      "id": "sustained-backlog",
+      "protocol": {
+        "id": "threadpool-backlog-scenario",
+        "version": "1",
+        "backlogLevel": 8,
+        "highWorkerLevel": 16,
+        "requiredBacklogWindowProportion": 0.6,
+        "requiredDurationAboveLevelSeconds": 4,
+        "minimumWindows": 5,
+        "drainTailWindows": 2
+      },
+      "reason": {
+        "value": "Starvation",
+        "provenance": "runtime-observed",
+        "captureId": "capture-sustained-backlog",
+        "observedAtSeconds": 5
+      },
+      "windows": [
+        { "id": "window-1", "startSeconds": 0, "durationSeconds": 1, "queueLength": 12, "workerCount": 4, "queueP95": 14, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-2", "startSeconds": 1, "durationSeconds": 1, "queueLength": 16, "workerCount": 5, "queueP95": 18, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-3", "startSeconds": 2, "durationSeconds": 1, "queueLength": 20, "workerCount": 6, "queueP95": 22, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-4", "startSeconds": 3, "durationSeconds": 1, "queueLength": 24, "workerCount": 7, "queueP95": 26, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-5", "startSeconds": 4, "durationSeconds": 1, "queueLength": 28, "workerCount": 8, "queueP95": 30, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-6", "startSeconds": 5, "durationSeconds": 1, "queueLength": 32, "workerCount": 9, "queueP95": 34, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" }
+      ],
+      "expected": {
+        "nextAction": "collectWaitsAndStacksNow",
+        "starvationSupport": "confirmedByRuntimeReason",
+        "queueMedian": 22,
+        "queueP95Median": 24,
+        "queueSlope": 4,
+        "workerMedian": 6.5,
+        "workerSlope": 1,
+        "backlogWindows": 6,
+        "backlogWindowProportion": 1,
+        "durationAboveLevelSeconds": 6,
+        "drainedAtTail": false
+      }
+    },
+    {
+      "id": "transient-draining-burst",
+      "protocol": {
+        "id": "threadpool-backlog-scenario",
+        "version": "1",
+        "backlogLevel": 8,
+        "highWorkerLevel": 16,
+        "requiredBacklogWindowProportion": 0.6,
+        "requiredDurationAboveLevelSeconds": 4,
+        "minimumWindows": 5,
+        "drainTailWindows": 2
+      },
+      "reason": {
+        "value": "Warmup",
+        "provenance": "runtime-observed",
+        "captureId": "capture-transient-draining-burst",
+        "observedAtSeconds": 5
+      },
+      "windows": [
+        { "id": "window-1", "startSeconds": 0, "durationSeconds": 1, "queueLength": 30, "workerCount": 4, "queueP95": 32, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-2", "startSeconds": 1, "durationSeconds": 1, "queueLength": 24, "workerCount": 5, "queueP95": 26, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-3", "startSeconds": 2, "durationSeconds": 1, "queueLength": 18, "workerCount": 6, "queueP95": 20, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-4", "startSeconds": 3, "durationSeconds": 1, "queueLength": 12, "workerCount": 7, "queueP95": 14, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-5", "startSeconds": 4, "durationSeconds": 1, "queueLength": 6, "workerCount": 8, "queueP95": 8, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-6", "startSeconds": 5, "durationSeconds": 1, "queueLength": 0, "workerCount": 9, "queueP95": 2, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" }
+      ],
+      "expected": {
+        "nextAction": "treatBurstAsResolved",
+        "starvationSupport": "notEstablished",
+        "queueMedian": 15,
+        "queueP95Median": 17,
+        "queueSlope": -6,
+        "workerMedian": 6.5,
+        "workerSlope": 1,
+        "backlogWindows": 4,
+        "backlogWindowProportion": 0.6666666666666666,
+        "durationAboveLevelSeconds": 4,
+        "drainedAtTail": true
+      }
+    },
+    {
+      "id": "high-workers-without-backlog",
+      "protocol": {
+        "id": "threadpool-backlog-scenario",
+        "version": "1",
+        "backlogLevel": 8,
+        "highWorkerLevel": 16,
+        "requiredBacklogWindowProportion": 0.6,
+        "requiredDurationAboveLevelSeconds": 4,
+        "minimumWindows": 5,
+        "drainTailWindows": 2
+      },
+      "reason": {
+        "value": "Stabilizing",
+        "provenance": "runtime-observed",
+        "captureId": "capture-high-workers-without-backlog",
+        "observedAtSeconds": 5
+      },
+      "windows": [
+        { "id": "window-1", "startSeconds": 0, "durationSeconds": 1, "queueLength": 0, "workerCount": 32, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-2", "startSeconds": 1, "durationSeconds": 1, "queueLength": 0, "workerCount": 32, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-3", "startSeconds": 2, "durationSeconds": 1, "queueLength": 0, "workerCount": 32, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-4", "startSeconds": 3, "durationSeconds": 1, "queueLength": 0, "workerCount": 32, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-5", "startSeconds": 4, "durationSeconds": 1, "queueLength": 0, "workerCount": 32, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-6", "startSeconds": 5, "durationSeconds": 1, "queueLength": 0, "workerCount": 32, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" }
+      ],
+      "expected": {
+        "nextAction": "investigateOtherSignals",
+        "starvationSupport": "notEstablished",
+        "queueMedian": 0,
+        "queueP95Median": 0,
+        "queueSlope": 0,
+        "workerMedian": 32,
+        "workerSlope": 0,
+        "backlogWindows": 0,
+        "backlogWindowProportion": 0,
+        "durationAboveLevelSeconds": 0,
+        "drainedAtTail": false
+      }
+    },
+    {
+      "id": "unknown-starvation-reason",
+      "protocol": {
+        "id": "threadpool-backlog-scenario",
+        "version": "1",
+        "backlogLevel": 8,
+        "highWorkerLevel": 16,
+        "requiredBacklogWindowProportion": 0.6,
+        "requiredDurationAboveLevelSeconds": 4,
+        "minimumWindows": 5,
+        "drainTailWindows": 2
+      },
+      "reason": {
+        "value": null,
+        "provenance": "missing",
+        "captureId": null,
+        "observedAtSeconds": null
+      },
+      "windows": [
+        { "id": "window-1", "startSeconds": 0, "durationSeconds": 1, "queueLength": 10, "workerCount": 4, "queueP95": 12, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-2", "startSeconds": 1, "durationSeconds": 1, "queueLength": 14, "workerCount": 5, "queueP95": 16, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-3", "startSeconds": 2, "durationSeconds": 1, "queueLength": 18, "workerCount": 6, "queueP95": 20, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-4", "startSeconds": 3, "durationSeconds": 1, "queueLength": 22, "workerCount": 7, "queueP95": 24, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-5", "startSeconds": 4, "durationSeconds": 1, "queueLength": 26, "workerCount": 8, "queueP95": 28, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-6", "startSeconds": 5, "durationSeconds": 1, "queueLength": 30, "workerCount": 9, "queueP95": 32, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" }
+      ],
+      "expected": {
+        "nextAction": "collectWaitsAndStacksNow",
+        "starvationSupport": "notEstablished",
+        "queueMedian": 20,
+        "queueP95Median": 22,
+        "queueSlope": 4,
+        "workerMedian": 6.5,
+        "workerSlope": 1,
+        "backlogWindows": 6,
+        "backlogWindowProportion": 1,
+        "durationAboveLevelSeconds": 6,
+        "drainedAtTail": false
+      }
+    },
+    {
+      "id": "loss-and-truncation",
+      "protocol": {
+        "id": "threadpool-backlog-scenario",
+        "version": "1",
+        "backlogLevel": 8,
+        "highWorkerLevel": 16,
+        "requiredBacklogWindowProportion": 0.6,
+        "requiredDurationAboveLevelSeconds": 4,
+        "minimumWindows": 5,
+        "drainTailWindows": 2
+      },
+      "reason": {
+        "value": "Starvation",
+        "provenance": "runtime-observed",
+        "captureId": "capture-loss-and-truncation",
+        "observedAtSeconds": 5
+      },
+      "windows": [
+        { "id": "window-1", "startSeconds": 0, "durationSeconds": 1, "queueLength": 12, "workerCount": 4, "queueP95": 14, "sourceEventCount": 8, "lostOrDropped": 3, "representation": "truncated" },
+        { "id": "window-2", "startSeconds": 1, "durationSeconds": 1, "queueLength": 16, "workerCount": 5, "queueP95": 18, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "truncated" },
+        { "id": "window-3", "startSeconds": 2, "durationSeconds": 1, "queueLength": 20, "workerCount": 6, "queueP95": 22, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "truncated" },
+        { "id": "window-4", "startSeconds": 3, "durationSeconds": 1, "queueLength": 24, "workerCount": 7, "queueP95": 26, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "truncated" },
+        { "id": "window-5", "startSeconds": 4, "durationSeconds": 1, "queueLength": 28, "workerCount": 8, "queueP95": 30, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "truncated" },
+        { "id": "window-6", "startSeconds": 5, "durationSeconds": 1, "queueLength": 32, "workerCount": 9, "queueP95": 34, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "truncated" }
+      ],
+      "expected": {
+        "nextAction": "recaptureDegradedEvidence",
+        "starvationSupport": "inconclusiveDegradedEvidence",
+        "queueMedian": null,
+        "queueP95Median": null,
+        "queueSlope": null,
+        "workerMedian": null,
+        "workerSlope": null,
+        "backlogWindows": null,
+        "backlogWindowProportion": null,
+        "durationAboveLevelSeconds": null,
+        "drainedAtTail": null
+      }
+    },
+    {
+      "id": "healthy-control",
+      "protocol": {
+        "id": "threadpool-backlog-scenario",
+        "version": "1",
+        "backlogLevel": 8,
+        "highWorkerLevel": 16,
+        "requiredBacklogWindowProportion": 0.6,
+        "requiredDurationAboveLevelSeconds": 4,
+        "minimumWindows": 5,
+        "drainTailWindows": 2
+      },
+      "reason": {
+        "value": null,
+        "provenance": "missing",
+        "captureId": null,
+        "observedAtSeconds": null
+      },
+      "windows": [
+        { "id": "window-1", "startSeconds": 0, "durationSeconds": 1, "queueLength": 0, "workerCount": 4, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-2", "startSeconds": 1, "durationSeconds": 1, "queueLength": 0, "workerCount": 4, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-3", "startSeconds": 2, "durationSeconds": 1, "queueLength": 0, "workerCount": 4, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-4", "startSeconds": 3, "durationSeconds": 1, "queueLength": 0, "workerCount": 4, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-5", "startSeconds": 4, "durationSeconds": 1, "queueLength": 0, "workerCount": 4, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" },
+        { "id": "window-6", "startSeconds": 5, "durationSeconds": 1, "queueLength": 0, "workerCount": 4, "queueP95": 0, "sourceEventCount": 8, "lostOrDropped": 0, "representation": "exact" }
+      ],
+      "expected": {
+        "nextAction": "continueObservation",
+        "starvationSupport": "notEstablished",
+        "queueMedian": 0,
+        "queueP95Median": 0,
+        "queueSlope": 0,
+        "workerMedian": 4,
+        "workerSlope": 0,
+        "backlogWindows": 0,
+        "backlogWindowProportion": 0,
+        "durationAboveLevelSeconds": 0,
+        "drainedAtTail": false
+      }
+    }
+  ]
+}
