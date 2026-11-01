@@ -144,8 +144,9 @@ public sealed record AllocationReproducibilityInput(
 
 /// <summary>
 /// Produces bounded, descriptive reproducibility evidence from separately started allocation
-/// captures. Allocation totals remain runtime sampling weights. Type and stack inventories are
-/// evaluated independently and no causal, severity, regression or health verdict is produced.
+/// captures. Estimated bytes remain runtime sampling weights. Capture identity does not verify
+/// workload equivalence, type and stack inventories are evaluated independently, and no
+/// dominance, causal, severity, regression, health or optimization-priority verdict is produced.
 /// </summary>
 public static class AllocationReproducibility
 {
@@ -240,11 +241,13 @@ public static class AllocationReproducibility
             totalsUnavailable);
         var limitations = new List<string>
         {
-            "GCAllocationTick estimated bytes are runtime sampling weights, not exact allocated bytes, object counts, retained bytes or CPU time.",
+            "GCAllocationTick estimated bytes are runtime sampling weights, not exact allocation totals, retained bytes, object counts or CPU time.",
+            "Stable top-K membership or rank describes retained sampled inventories only; it does not prove that a type or call site dominates the workload.",
             "Allocated types and allocation stack sites are independent ranked inventories; no type-to-stack relationship is inferred or serialized.",
             "Capture-level medians and raw median absolute deviations are descriptive only. No confidence interval is computed over weighted allocation ticks.",
-            "Workload equivalence is not observed by the collector and remains a caller-held assumption.",
-            "Scenario validation thresholds are intentionally absent; this result emits no causal, severity, regression or health verdict.",
+            "Capture identity compatibility covers recorded runtime, backend and requested capture settings only; it does not verify equivalent request mix, workload intensity or execution conditions.",
+            "Reproducibility is descriptive only: no universal scenario threshold or causal, severity, regression, health, performance or optimization-priority verdict is produced.",
+            "Missing, partial, zero-weight, unavailable or empty attribution and bounded inventories do not mean zero allocation activity; they describe observation or attribution limits for that capture.",
         };
         if (captures.Any(static capture => capture.HandleStatus != "available"))
         {
@@ -272,17 +275,17 @@ public static class AllocationReproducibility
             captures,
             [
                 "Each input is one separately started and stopped allocation capture.",
-                "Compatible captures used the same runtime semantics, EventPipe allocation backend, requested duration and retained top-N bounds.",
-                "The workload shape and offered work were stable across captures.",
+                "Identity-compatible captures reported the same runtime semantics, EventPipe allocation backend, requested duration and retained top-N bounds.",
+                "Any assertion that workload shape, request mix, intensity or execution conditions were equivalent is caller-supplied and was not verified by capture identity.",
             ],
             limitations);
         var summary = availability switch
         {
             AllocationReproducibilityAvailability.Available
-                => $"Analyzed {available.Length} compatible allocation captures using bounded independent type and stack top-{topK} stability; no performance verdict was produced.",
+                => $"Analyzed {available.Length} identity-compatible allocation captures using descriptive bounded independent type and stack top-{topK} stability; stability does not establish workload dominance or a performance verdict.",
             AllocationReproducibilityAvailability.Incompatible
                 => $"Allocation captures are incompatible; capture-level evidence was retained but no pooled reproducibility calculation was produced.",
-            _ => $"Allocation reproducibility requires at least {AllocationReproducibilityBounds.MinimumCaptures} compatible available captures; {available.Length} were available.",
+            _ => $"Allocation reproducibility requires at least {AllocationReproducibilityBounds.MinimumCaptures} identity-compatible available captures; {available.Length} were available.",
         };
         return DiagnosticResult.Ok(result, summary);
     }

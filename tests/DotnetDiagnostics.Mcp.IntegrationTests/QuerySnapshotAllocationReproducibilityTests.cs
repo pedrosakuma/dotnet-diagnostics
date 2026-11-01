@@ -32,7 +32,8 @@ public sealed class QuerySnapshotAllocationReproducibilityTests
         var result = await Query(store, current.Id, [first.Id]);
 
         result.Error.Should().BeNull();
-        result.Summary.Should().Contain("independent type and stack");
+        result.Summary.Should().Contain("descriptive bounded independent type and stack");
+        result.Summary.Should().Contain("does not establish workload dominance");
         var data = result.Data.Should().BeOfType<AllocationReproducibilityResult>().Subject;
         data.Schema.Should().Be(AllocationReproducibilityResult.SchemaV1);
         data.Method.Should().Be(AllocationReproducibilityResult.MethodV1);
@@ -40,6 +41,14 @@ public sealed class QuerySnapshotAllocationReproducibilityTests
         data.Availability.Should().Be(AllocationReproducibilityAvailability.Available);
         data.AllocatedTypeStability.MedianMembershipJaccard.Should().Be(1);
         data.AllocationStackStability.MedianSharedKeySpearman.Should().Be(1);
+        data.Assumptions.Should().Contain(assumption =>
+            assumption.Contains("not verified by capture identity", StringComparison.Ordinal));
+        data.Limitations.Should().Contain(limitation =>
+            limitation.Contains("not exact allocation totals", StringComparison.Ordinal));
+        data.Limitations.Should().Contain(limitation =>
+            limitation.Contains("does not prove that a type or call site dominates the workload", StringComparison.Ordinal));
+        data.Limitations.Should().Contain(limitation =>
+            limitation.Contains("do not mean zero allocation activity", StringComparison.Ordinal));
         JsonSerializer.SerializeToElement(data).TryGetProperty("Verdict", out _).Should().BeFalse();
     }
 

@@ -45,7 +45,10 @@ public sealed class CliAllocationReproducibilityTests
         outcome.Human.Should().Contain("independence unit: capture");
         outcome.Human.Should().Contain("estimated bytes: median=1,000.00, raw MAD=100.00");
         outcome.Human.Should().Contain("allocated types: pairs=3");
-        outcome.Human.Should().Contain("no causal, severity, regression or health verdict");
+        outcome.Human.Should().Contain("does not prove that a type or call site dominates the workload");
+        outcome.Human.Should().Contain("does not verify equivalent request mix, workload intensity or execution conditions");
+        outcome.Human.Should().Contain("no universal scenario threshold or causal, severity, regression, health, performance or optimization-priority verdict");
+        outcome.Human.Should().Contain("do not mean zero allocation activity");
         var envelope = outcome.Envelope.Should().BeOfType<DiagnosticResult<AllocationReproducibilityResult>>().Subject;
         envelope.Data!.TopK.Should().Be(2);
         envelope.Data.Captures.Should().HaveCount(3);

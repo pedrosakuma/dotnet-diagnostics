@@ -8,6 +8,9 @@ Statistical contract: [#1308](https://github.com/pedrosakuma/dotnet-diagnostics/
 
 Repeated-observation harness: [#1311](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1311)
 
+Operational interpretation evidence:
+[#1340](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1340)
+
 ## Verdict
 
 **GO** for a separate minimal Core/CLI evidence-contract issue.
@@ -18,8 +21,10 @@ the top. A controlled workload-mix change replaced both top-ranked keys and redu
 cross-arm top-K membership, while the repeated A/A arm preserved the same top keys
 and rank order.
 
-This evidence can prioritize a type inventory and a separate stack-site inventory.
-It does not correlate a type to a stack, estimate exact allocated bytes or object
+This evidence can prioritize a type inventory and a separate stack-site inventory for follow-up
+under the controlled protocol; stable retained ranks alone do not prove workload dominance or
+optimization priority.
+It does not correlate a type to a stack, estimate exact allocation totals or object
 counts, establish retained memory, or produce a performance verdict.
 
 ## Protocol
@@ -73,8 +78,9 @@ therefore remains `partial` even though its median attributed shares round to 10
 | changed mix | 0.833 / 0.667 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | `System.Int32[]`; `AllocateChangedIntegers` |
 
 Each row summarizes six pairwise comparisons across four independent captures.
-Occasional third-ranked noise reduced membership without changing the dominant key or
-the order of shared keys.
+Occasional third-ranked noise reduced membership without changing the highest-ranked retained key
+or the order of shared keys. "Highest-ranked" is limited to these sampled top-K inventories and is
+not a workload-dominance claim.
 
 ### A/A and changed-mix contrasts
 
@@ -138,7 +144,8 @@ parameter descriptions increase both shipping MCP catalogs by 132 bytes: the max
 17-tool catalog is 283,977 bytes and the default 13-tool catalog is 250,809 bytes.
 
 The deterministic maximum result fixture uses all 8 captures and top-K 16 for both
-independent inventories. Its serialized payload is 37,670 bytes, below the explicit
+independent inventories. Its serialized payload is 38,257 bytes after the interpretation-boundary
+wording hardening, below the explicit
 128 KiB test ceiling. Smaller capture counts/top-K values serialize proportionally
 less evidence. `AllocationReproducibilityTests` pins the schema/method identifiers,
 the exact representative maximum payload, list bounds, and reordered-input stability

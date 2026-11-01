@@ -574,15 +574,23 @@ and the final handle in `handle`. At most eight captures and top-K 16 are accept
 {"type":"query","requestId":"alloc-repro","handle":"<third>","comparisonHandles":["<first>","<second>"],"view":"allocation-reproducibility","topN":3}
 ```
 
-The result preserves each capture's estimated allocation bytes and allocation ticks, then reports
-their median and raw median absolute deviation as descriptive values only. It evaluates allocated
-type membership/ranks and allocation-stack membership/ranks independently: bounded top-K Jaccard
-for membership and Spearman after re-ranking only keys shared by each pair. Attribution includes
+The result preserves each capture's `GCAllocationTick` estimated-byte sampling weights and
+allocation ticks, then reports their median and raw median absolute deviation as descriptive values
+only. Estimated bytes are not exact allocation totals, retained bytes, object counts or CPU time.
+It evaluates allocated type membership/ranks and allocation-stack membership/ranks independently:
+bounded top-K Jaccard for membership and Spearman after re-ranking only keys shared by each pair.
+Stable top-K membership or rank does not prove that a type or call site dominates the workload.
+Attribution includes
 attributed/unattributed tick and byte shares and explicit `raw_empty`, `no_stack`, `zero_weight`,
 `partial`, `complete`, `unavailable` and `unavailable_handle` states. It does not correlate a type
 to a stack, gate on sampled-total overlap/deltas, construct intervals over weighted ticks, or emit
-causal, severity, regression, health or performance verdicts. Workload equivalence and any
-scenario-specific named thresholds remain caller-held assumptions, not universal defaults.
+causal, severity, regression, health, performance or optimization-priority verdicts. Matching
+capture identity does not verify equivalent request mix, workload intensity or execution
+conditions. Missing, partial, zero-weight, unavailable or empty attribution/inventory evidence does
+not mean zero allocation activity. Workload equivalence and any scenario-specific named thresholds
+remain caller-held assumptions, not universal defaults. These boundaries reflect the operational
+unsupported-certainty evidence retained by
+[#1340](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1340).
 
 Exception captures use the same Core collectors and safety profiles as `collect --kind exceptions`
 or `collect --kind crash-guard`:
@@ -2340,6 +2348,13 @@ query --handle <third> \
   --view allocation-reproducibility \
   --top 3
 ```
+
+The interpretation limits are identical to the JSONL path above: estimated bytes are sampling
+weights rather than exact allocation/retention/object-count/CPU measurements; stable top-K
+membership or rank does not prove workload dominance; matching capture identity does not verify
+request mix, workload intensity or execution conditions; reproducibility emits no causal, severity,
+regression, health, performance or optimization-priority verdict; and missing, partial, zero-weight,
+unavailable or empty attribution/inventory evidence does not mean zero allocation activity.
 
 `--rank-by inclusive` ranks by inclusive observations; `exclusive` ranks leaf observations.
 `--rank-by running` uses measured on-CPU self samples only for perf/ETW evidence. On CoreCLR
