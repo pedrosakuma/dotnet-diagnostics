@@ -155,6 +155,32 @@ public sealed class ToolReferenceDocParityTests
     }
 
     [Fact]
+    public void AllocationReproducibilityDocs_PreserveInterpretationBoundaries()
+    {
+        var references = new[]
+        {
+            ReadToolReference(),
+            ReadRepoFile(Path.Combine("docs", "cli-reference.md")),
+        };
+
+        foreach (var doc in references)
+        {
+            var normalized = string.Join(
+                " ",
+                doc.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            normalized.Should().Contain("not exact allocation totals");
+            normalized.Should().Contain("does not prove that a type or call site dominates the workload");
+            normalized.Should().Contain("does not verify equivalent request mix, workload intensity or execution conditions");
+            normalized.Should().Contain("optimization-priority");
+            normalized.Should().Contain("does not mean zero allocation activity");
+            normalized.Should().Contain("issues/1340");
+        }
+
+        ReadRepoFile(Path.Combine("docs", "research", "allocation-hotspot-reproducibility.md"))
+            .Should().Contain("issues/1340");
+    }
+
+    [Fact]
     public void LockStormCaseStudy_UsesSerializedThreadAndLockFieldShapes()
     {
         var doc = ReadRepoFile(Path.Combine("docs", "case-studies", "lock-storm-correlation.md"));

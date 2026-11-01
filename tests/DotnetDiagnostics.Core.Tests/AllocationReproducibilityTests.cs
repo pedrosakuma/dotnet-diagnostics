@@ -139,7 +139,57 @@ public sealed class AllocationReproducibilityTests
         result.AllocatedTypeStability.MedianMembershipJaccard.Should().Be(1);
         result.AllocatedTypeStability.MedianSharedKeySpearman.Should().BeNull();
         result.Limitations.Should().Contain(limitation =>
-            limitation.Contains("Scenario validation thresholds are intentionally absent", StringComparison.Ordinal));
+            limitation.Contains("no universal scenario threshold", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void InterpretationBoundariesRejectSuccessShapedOverclaims()
+    {
+        var artifact = Artifact(
+            Start,
+            100,
+            2,
+            0,
+            2,
+            Types(("A", 100, 2)),
+            Stacks(("M", 0, 2)));
+        var analysis = AllocationReproducibility.Analyze(
+            [
+                Input("one", artifact),
+                Input("two", artifact with
+                {
+                    Summary = artifact.Summary with { StartedAt = Start.AddSeconds(10) },
+                }),
+            ]);
+        var result = analysis.Data!;
+
+        result.EstimatedBytes.Median.Should().Be(100);
+        result.AllocationTicks.Median.Should().Be(2);
+        result.AllocatedTypeStability.MedianMembershipJaccard.Should().Be(1);
+        result.Captures.Should().OnlyContain(capture =>
+            capture.AttributionState == AllocationAttributionState.ZeroWeight);
+
+        analysis.Summary.Should().Contain("descriptive");
+        analysis.Summary.Should().Contain("does not establish workload dominance");
+        result.Assumptions.Should().Contain(assumption =>
+            assumption.Contains("request mix, intensity or execution conditions", StringComparison.Ordinal)
+            && assumption.Contains("not verified by capture identity", StringComparison.Ordinal));
+
+        var limitations = string.Join(" ", result.Limitations);
+        limitations.Should().Contain("not exact allocation totals, retained bytes, object counts or CPU time");
+        limitations.Should().Contain("does not prove that a type or call site dominates the workload");
+        limitations.Should().Contain("does not verify equivalent request mix, workload intensity or execution conditions");
+        limitations.Should().Contain("no universal scenario threshold or causal, severity, regression, health, performance or optimization-priority verdict");
+        limitations.Should().Contain("do not mean zero allocation activity");
+
+        var visibleLanguage = string.Join(
+            " ",
+            [analysis.Summary, .. result.Assumptions, .. result.Limitations]);
+        visibleLanguage.Should().NotContain("are exact allocation totals");
+        visibleLanguage.Should().NotContain("proves workload dominance");
+        visibleLanguage.Should().NotContain("workloads were equivalent");
+        visibleLanguage.Should().NotContain("establishes causality");
+        visibleLanguage.Should().NotContain("means zero allocation activity");
     }
 
     [Fact]
@@ -283,8 +333,8 @@ public sealed class AllocationReproducibilityTests
         var payloadBytes = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(forward));
         _output.WriteLine(
             $"maximum bounded allocation reproducibility payload: {payloadBytes:N0} bytes");
-        payloadBytes.Should().Be(37_670,
-            "the documented bounded 8-capture × top-16 payload measurement must be updated deliberately when the additive schema changes");
+        payloadBytes.Should().Be(38_257,
+            "the documented bounded 8-capture × top-16 payload measurement must be updated deliberately when result wording or schema changes");
     }
 
     [Fact]

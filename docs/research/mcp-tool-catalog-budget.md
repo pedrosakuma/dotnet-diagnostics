@@ -42,12 +42,12 @@ does not expand with the result record.
 Measured against the canonical source-generated schemas and representative
 available/incompatible results:
 
-- current maximal catalog: **286,452 bytes**
-- current default catalog: **253,284 bytes**
+- current maximal catalog: **286,596 bytes**
+- current default catalog: **253,428 bytes**
 - existing `compare_to_baseline` output-schema delta is **0 bytes**
 - standalone typed request-latency result schema: **10,142 bytes**
 - projected catalog if that result were wired into the typed output schema:
-  **296,592 bytes** (**+10,140 bytes**)
+  **296,736 bytes** (**+10,140 bytes**)
 - representative available result payload: **5,688 bytes**
 - representative incompatible result payload: **6,277 bytes**
 
@@ -67,12 +67,12 @@ output schema does not expand.
 Measured against the source-generated result schema and representative
 available/incompatible/degraded results:
 
-- current maximal catalog: **286,452 bytes**
-- current default catalog: **253,284 bytes**
+- current maximal catalog: **286,596 bytes**
+- current default catalog: **253,428 bytes**
 - CPU-hotspot existing `compare_to_baseline` output-schema delta is **0 bytes**
 - standalone typed CPU-hotspot result schema: **15,593 bytes**
 - projected catalog if wired into the typed output schema:
-  **302,043 bytes** (**+15,591 bytes**)
+  **302,187 bytes** (**+15,591 bytes**)
 - representative available result payload: **10,019 bytes**
 - representative incompatible result payload: **9,141 bytes**
 - representative degraded result payload: **9,115 bytes**
@@ -80,6 +80,29 @@ available/incompatible/degraded results:
 The bounded result is therefore paid only by callers that request this
 comparison. Adding it to the registered typed output schema would exceed the
 287,000-byte maximal-catalog ceiling.
+
+### Allocation reproducibility interpretation wording (#1342)
+
+The allocation reproducibility result continues to use the existing
+`query_snapshot.data` envelope and the existing
+`dotnet-diagnostics/allocation-reproducibility/v1` schema. The result wording
+hardens interpretation boundaries, while concise updates to the existing
+`view`, `topN` and `comparisonHandles` descriptions make the most important
+limits visible in `tools/list`.
+
+The real HTTP budget test measures:
+
+- **286,596 bytes** for the maximal 17-tool catalog;
+- **253,428 bytes** for the default 13-tool subset;
+- **+144 bytes** for each catalog relative to the pre-#1342
+  286,452/253,284-byte baseline;
+- **404 bytes** of maximal-catalog headroom under the unchanged 287,000-byte
+  ceiling.
+
+No tool, parameter, output-schema property or registration gate was added. The
+maximum 8-capture × top-16 result payload is **38,257 bytes** after the shared
+summary/assumption/limitation wording update; this per-call payload does not
+expand `tools/list`.
 
 ## Reproduce
 
@@ -106,9 +129,9 @@ record; tool counts and registration gates remain unchanged.
 
 ### Objective retained-growth Core/CLI contract (2026-11-01, #1325)
 
-The executable HTTP budget test measures **286,452 bytes** for the maximal
-17-tool catalog and **253,284 bytes** for the default 13-tool subset after the
-concurrent #1323 typed counter-output addition. The retained-growth
+The executable HTTP budget test measures **286,596 bytes** for the maximal
+17-tool catalog and **253,428 bytes** for the default 13-tool subset after the
+#1323 typed counter-output addition and #1342 wording hardening. The retained-growth
 shipping catalog delta is **0 bytes**: objective retained growth adds no MCP
 tool, and the existing `query_snapshot.data` output remains intentionally
 unconstrained.
@@ -123,8 +146,8 @@ retained growth requires no increase beyond the current **287,000-byte** ceiling
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
-The real HTTP test measures the current shipping catalog at **286,452 bytes**
-for the maximal 17-tool surface and **253,284 bytes** for the default 13 tools.
+The real HTTP test measures the current shipping catalog at **286,596 bytes**
+for the maximal 17-tool surface and **253,428 bytes** for the default 13 tools.
 
 The same executable test generates a design-only representative statistical
 evidence schema and projects it onto the existing `collect_events`,
@@ -132,8 +155,8 @@ evidence schema and projects it onto the existing `collect_events`,
 tool or changing production DTOs:
 
 - representative evidence schema: **3,493 bytes**;
-- prospective maximal catalog: **297,000 bytes** (**+10,548**);
-- prospective default catalog: **263,832 bytes** (**+10,548**);
+- prospective maximal catalog: **297,144 bytes** (**+10,548**);
+- prospective default catalog: **263,976 bytes** (**+10,548**);
 - representative available payload: **1,058 bytes**;
 - representative unavailable payloads: **1,006–1,047 bytes**.
 

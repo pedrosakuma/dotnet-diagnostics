@@ -465,11 +465,11 @@ scenario vertical slice (#1323) present:
 
 | Measurement | UTF-8 bytes |
 |---|---:|
-| Current maximal 17-tool catalog | 286,452 |
-| Current default 13-tool catalog | 253,284 |
+| Current maximal 17-tool catalog | 286,596 |
+| Current default 13-tool catalog | 253,428 |
 | Representative evidence JSON schema | 3,493 |
-| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 297,000 |
-| Prospective default catalog with the same three existing tools | 263,832 |
+| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 297,144 |
+| Prospective default catalog with the same three existing tools | 263,976 |
 | Catalog increase, maximal and default | 10,548 |
 | Representative `available` payload | 1,058 |
 | Representative unavailable payload range | 1,006–1,047 |

@@ -61,6 +61,10 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // through the existing CounterSnapshot output path. The maximal catalog is
     // 286,452 bytes and the default catalog is 253,284 bytes; 287,000 preserves
     // the typed contract with 548 bytes of headroom and adds no tool.
+    // Issue #1342: concise query_snapshot parameter wording makes allocation
+    // reproducibility interpretation limits catalog-visible. The maximal/default
+    // catalogs are 286,596/253,428 bytes (+144 each), preserving 17/13 tools and
+    // 404 bytes of maximal-catalog headroom under the unchanged ceiling.
     private const int MaximumCatalogBytes = 287_000;
 
     private readonly FullCatalogFactory _factory;

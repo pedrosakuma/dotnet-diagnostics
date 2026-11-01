@@ -567,14 +567,23 @@ inline and accepted pairs are `cpu-sample × cpu-sample`, `heap-snapshot × heap
 `allocation-sample` also accepts `view="allocation-reproducibility"` with one or more earlier
 separately started capture handles in `comparisonHandles`; the current `handle` is appended.
 This is not the generic `diff` verdict path. It accepts 2-8 captures and top-K 1-16 (default 3),
-preserves each capture's estimated-byte/tick totals with descriptive median and raw MAD, and
+preserves each capture's `GCAllocationTick` estimated-byte sampling weights and tick totals with
+descriptive median and raw MAD, and
 evaluates allocated types and allocation stacks independently using top-K Jaccard membership plus
-shared-key Spearman ranks. The payload exposes attributed/unattributed byte and tick shares and
+shared-key Spearman ranks. Estimated bytes are not exact allocation totals, retained bytes, object
+counts or CPU time. Stable top-K membership or rank describes only the retained sampled inventory;
+it does not prove that a type or call site dominates the workload. The payload exposes
+attributed/unattributed byte and tick shares and
 explicit empty, no-stack, zero-weight, partial, complete and unavailable states. Historical
-captures missing compatibility identity remain incompatible without synthetic backfill. The view
+captures missing compatibility identity remain incompatible without synthetic backfill. Matching
+capture identity covers recorded runtime/backend/request settings only; it does not verify
+equivalent request mix, workload intensity or execution conditions. Missing, partial, zero-weight,
+unavailable or empty attribution/inventory evidence does not mean zero allocation activity. The view
 does not gate on sampled-total overlap/deltas, build generic intervals over weighted ticks,
-correlate types to stacks, or emit causal, severity, regression, health or performance verdicts.
-Scenario thresholds are caller-named and non-universal.
+correlate types to stacks, or emit causal, severity, regression, health, performance or
+optimization-priority verdicts. Scenario thresholds are caller-named and
+non-universal. These boundaries directly address the unsupported-certainty evidence retained by
+[#1340](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1340).
 
 Counters, contention and ThreadPool journey comparisons report objective deltas,
 not workload-independent improvement/regression. Their metrics are direction-neutral:
