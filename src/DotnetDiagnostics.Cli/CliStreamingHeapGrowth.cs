@@ -20,7 +20,8 @@ internal static partial class CliStreamingProtocol
         string? CurrentHandle,
         string? FailureReason,
         int? ObservedGen2Collections,
-        RetainedGrowthAllocationObservation? Allocation);
+        RetainedGrowthAllocationObservation? Allocation,
+        RetainedGrowthAttemptCompatibility? Compatibility);
 
     private static object ProjectHeapGrowthCapability(IServiceProvider services)
     {
@@ -40,6 +41,8 @@ internal static partial class CliStreamingProtocol
             objectiveTargetField = "typeFilter",
             comparisonPairsField = "comparisonPairs",
             objectiveSchema = RetainedGrowthEvidenceResult.SchemaV1,
+            compatibilityIdentityField = "compatibilityIdentity",
+            compatibilitySchema = RetainedGrowthCompatibilitySchemas.V1,
             maxAttempts = RetainedGrowthEvidenceBounds.MaximumAttempts,
             minimumRobustPairs = RetainedGrowthEvidenceBounds.MinimumRobustPairs,
             rankBy = new[] { HeapGrowthDiff.RankByBytes, HeapGrowthDiff.RankByInstances },
@@ -57,11 +60,21 @@ internal static partial class CliStreamingProtocol
     private static bool TryParseHeapGrowthAttempts(
         JsonElement root,
         bool isHeapGrowth,
+        out RetainedGrowthAttemptCompatibility? primaryCompatibility,
         out IReadOnlyList<HeapGrowthAttemptRequest> attempts,
         out string? error)
     {
+        primaryCompatibility = null;
         attempts = [];
         error = null;
+        if (!TryParseRetainedGrowthCompatibility(
+                root,
+                "compatibilityIdentity",
+                out primaryCompatibility,
+                out error))
+        {
+            return false;
+        }
         if (!root.TryGetProperty("comparisonPairs", out var pairsElement)
             || pairsElement.ValueKind == JsonValueKind.Null)
         {
@@ -218,6 +231,15 @@ internal static partial class CliStreamingProtocol
                     lostOrDropped);
             }
 
+            if (!TryParseRetainedGrowthCompatibility(
+                    element,
+                    $"comparisonPairs[{index}].compatibilityIdentity",
+                    out var compatibility,
+                    out error))
+            {
+                return false;
+            }
+
             parsed.Add(new HeapGrowthAttemptRequest(
                 attemptId,
                 outcome,
@@ -225,10 +247,110 @@ internal static partial class CliStreamingProtocol
                 currentHandle,
                 failureReason,
                 observedGen2Collections,
-                allocation));
+                allocation,
+                compatibility));
         }
 
         attempts = parsed;
+        return true;
+    }
+
+    private static bool TryParseRetainedGrowthCompatibility(
+        JsonElement parent,
+        string fieldPath,
+        out RetainedGrowthAttemptCompatibility? compatibility,
+        out string? error)
+    {
+        compatibility = null;
+        error = null;
+        const string propertyName = "compatibilityIdentity";
+        if (!parent.TryGetProperty(propertyName, out var element)
+            || element.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            error = $"'{fieldPath}' must be an object.";
+            return false;
+        }
+        if (!TryGetRequiredCompatibilityString(
+                element,
+                "schema",
+                $"{fieldPath}.schema",
+                128,
+                out var schema,
+                out error))
+        {
+            return false;
+        }
+        if (!string.Equals(schema, RetainedGrowthCompatibilitySchemas.V1, StringComparison.Ordinal))
+        {
+            error = $"'{fieldPath}.schema' must be '{RetainedGrowthCompatibilitySchemas.V1}'.";
+            return false;
+        }
+        if (!element.TryGetProperty("workload", out var workloadElement)
+            || workloadElement.ValueKind != JsonValueKind.Object)
+        {
+            error = $"'{fieldPath}.workload' must be an object.";
+            return false;
+        }
+        if (!TryGetRequiredCompatibilityString(workloadElement, "scenario", $"{fieldPath}.workload.scenario", 256, out var scenario, out error)
+            || !TryGetRequiredCompatibilityString(workloadElement, "scenarioVersion", $"{fieldPath}.workload.scenarioVersion", 128, out var scenarioVersion, out error)
+            || !TryGetRequiredCompatibilityString(workloadElement, "workload", $"{fieldPath}.workload.workload", 256, out var workload, out error)
+            || !TryGetRequiredCompatibilityString(workloadElement, "workloadVersion", $"{fieldPath}.workload.workloadVersion", 128, out var workloadVersion, out error)
+            || !TryGetRequiredCompatibilityString(workloadElement, "parameters", $"{fieldPath}.workload.parameters", 2048, out var parameters, out error)
+            || !TryGetRequiredCompatibilityString(workloadElement, "phase", $"{fieldPath}.workload.phase", 256, out var phase, out error))
+        {
+            return false;
+        }
+        if (!element.TryGetProperty("observationOpportunity", out var opportunityElement)
+            || opportunityElement.ValueKind != JsonValueKind.Object
+            || !opportunityElement.TryGetProperty("operations", out var operationsElement)
+            || !operationsElement.TryGetInt64(out var operations)
+            || operations <= 0
+            || !opportunityElement.TryGetProperty("elapsedSeconds", out var elapsedElement)
+            || !elapsedElement.TryGetDouble(out var elapsedSeconds)
+            || !double.IsFinite(elapsedSeconds)
+            || elapsedSeconds <= 0)
+        {
+            error = $"'{fieldPath}.observationOpportunity' must contain positive Int64 'operations' and positive finite 'elapsedSeconds'.";
+            return false;
+        }
+
+        compatibility = new(
+            schema,
+            new(
+                scenario,
+                scenarioVersion,
+                workload,
+                workloadVersion,
+                parameters,
+                phase),
+            new(operations, elapsedSeconds));
+        return true;
+    }
+
+    private static bool TryGetRequiredCompatibilityString(
+        JsonElement parent,
+        string propertyName,
+        string fieldPath,
+        int maximumLength,
+        out string value,
+        out string? error)
+    {
+        value = string.Empty;
+        error = null;
+        if (!TryGetString(parent, propertyName, out var parsed)
+            || parsed is not { Length: > 0 }
+            || parsed.Length > maximumLength
+            || string.IsNullOrWhiteSpace(parsed)
+            || parsed.Any(char.IsControl))
+        {
+            error = $"'{fieldPath}' must be a non-empty string of at most {maximumLength} characters without control characters.";
+            return false;
+        }
+        value = parsed;
         return true;
     }
 
@@ -243,6 +365,7 @@ internal static partial class CliStreamingProtocol
         double minDeltaPct,
         int topN,
         string? objectiveTargetType,
+        RetainedGrowthAttemptCompatibility? primaryCompatibility,
         IReadOnlyList<HeapGrowthAttemptRequest> comparisonAttempts,
         CancellationToken cancellationToken)
     {
@@ -361,7 +484,10 @@ internal static partial class CliStreamingProtocol
                     baselineHandle,
                     baseline,
                     currentHandle,
-                    current),
+                    current)
+                {
+                    Compatibility = primaryCompatibility,
+                },
             };
 
         if (objectiveAttempts is not null)
@@ -381,6 +507,7 @@ internal static partial class CliStreamingProtocol
                         FailureReason = attempt.FailureReason,
                         ObservedGen2Collections = attempt.ObservedGen2Collections,
                         Allocation = attempt.Allocation,
+                        Compatibility = attempt.Compatibility,
                     });
                     continue;
                 }
@@ -450,6 +577,7 @@ internal static partial class CliStreamingProtocol
                 {
                     ObservedGen2Collections = attempt.ObservedGen2Collections,
                     Allocation = attempt.Allocation,
+                    Compatibility = attempt.Compatibility,
                 });
             }
         }

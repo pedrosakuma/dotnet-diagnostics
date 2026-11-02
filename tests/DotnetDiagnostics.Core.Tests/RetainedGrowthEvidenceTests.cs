@@ -14,6 +14,16 @@ public sealed class RetainedGrowthEvidenceTests
     {
         ModuleName = "CoreClrSample.dll",
     };
+    private static readonly RetainedGrowthAttemptCompatibility Compatibility = new(
+        RetainedGrowthCompatibilitySchemas.V1,
+        new(
+            "retained-growth-known-shape",
+            "1",
+            "apply-retained-objects",
+            "1",
+            "objectCount=20000;payloadBytes=32",
+            "post-stabilization"),
+        new(20_000, 10));
 
     [Fact]
     public void RetainedGrowth_ReportsExactPairsAndBoundedRepeatedEvidence()
@@ -32,7 +42,22 @@ public sealed class RetainedGrowthEvidenceTests
             && pair.RetainedBytesDelta == 640_000
             && pair.BaselineRetainedInstances == 4_000
             && pair.CurrentRetainedInstances == 24_000
-            && pair.RetainedInstancesDelta == 20_000);
+            && pair.RetainedInstancesDelta == 20_000
+            && pair.RepeatedPoolingAvailability == RetainedGrowthEvidenceAvailability.Available);
+        var identity = result.Pairs[0].CompatibilityIdentity!;
+        identity.CompatibilitySchema.Should().Be(RetainedGrowthCompatibilitySchemas.V1);
+        identity.RetainedBytesQuantity.Should().Be(new RetainedGrowthQuantityIdentity(
+            "retained-shallow-bytes",
+            "bytes",
+            "paired-delta-then-window-median",
+            "absolute-over-declared-observation-opportunity"));
+        identity.RetainedInstancesQuantity.Should().Be(new RetainedGrowthQuantityIdentity(
+            "retained-instances",
+            "instances",
+            "paired-delta-then-window-median",
+            "absolute-over-declared-observation-opportunity"));
+        identity.Workload.Should().Be(Compatibility.Workload);
+        identity.ObservationOpportunity.Should().Be(Compatibility.ObservationOpportunity);
         result.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Available);
         result.Repeated.EstimateMethod.Id.Should().Be(RetainedGrowthEvidenceMethodIds.WindowMedian);
         result.Repeated.DispersionMethod.Id.Should()
@@ -54,6 +79,9 @@ public sealed class RetainedGrowthEvidenceTests
         result.Repeated.RetainedBytesBootstrapSeedSha256.Should()
             .NotBe(result.Repeated.RetainedInstancesBootstrapSeedSha256);
         result.Repeated.BootstrapResamples.Should().Be(RetainedGrowthEvidenceBounds.BootstrapResamples);
+        result.Repeated.CompatibilityIdentitySha256.Should().HaveLength(64);
+        result.Repeated.BootstrapPrng.Should().Be("xoshiro256-star-star-v1");
+        result.Repeated.BootstrapQuantileRule.Should().Be("linear-r7-v1");
         result.Counts.Should().Be(new RetainedGrowthEvidenceCounts(
             Attempts: 3,
             SuccessfulAttempts: 3,
@@ -205,6 +233,46 @@ public sealed class RetainedGrowthEvidenceTests
     }
 
     [Fact]
+    public void RepeatedAvailability_PreservesLossPrecedenceOverCaptureIncompatibility()
+    {
+        var attempts = Attempts(640_000, 20_000, allocationBytes: null).ToArray();
+        attempts[0] = attempts[0] with
+        {
+            Current = attempts[0].Current! with
+            {
+                Runtime = attempts[0].Current.Runtime with { Version = "9.0.0" },
+            },
+        };
+        attempts[1] = attempts[1] with
+        {
+            Current = attempts[1].Current! with
+            {
+                Quality = new EvidenceQuality(
+                    EvidenceQuality.SchemaV1,
+                    [
+                        new EvidenceLimitation(
+                            EvidenceLimitationCategory.DetectedTransportLoss,
+                            "eventpipe",
+                            7,
+                            "Seven events were reported lost."),
+                    ],
+                    new EvidenceConclusionPolicy(
+                        EvidenceConclusionSupport.Supported,
+                        EvidenceConclusionSupport.Inconclusive,
+                        EvidenceConclusionSupport.Inconclusive)),
+            },
+        };
+
+        var result = RetainedGrowthEvidence.Build(Target, attempts);
+
+        result.Pairs.Should().ContainSingle(pair =>
+            pair.Availability == RetainedGrowthEvidenceAvailability.Incompatible);
+        result.Pairs.Should().ContainSingle(pair =>
+            pair.Availability == RetainedGrowthEvidenceAvailability.LossDetected);
+        result.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.LossDetected);
+    }
+
+    [Fact]
     public void MissingTypeInBoundedClrMdRanking_DoesNotFabricateExactZero()
     {
         var attempt = Attempt(1, 640_000, 20_000);
@@ -255,8 +323,121 @@ public sealed class RetainedGrowthEvidenceTests
         result.Counts.ProcessRuns.Should().Be(2);
         result.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Incompatible);
         result.Pairs.Should().ContainSingle(pair =>
-            pair.CompatibilityMismatches.Any(mismatch =>
+            pair.Availability == RetainedGrowthEvidenceAvailability.Available
+            && pair.RepeatedPoolingAvailability == RetainedGrowthEvidenceAvailability.Incompatible
+            && pair.RetainedBytesDelta == 640_000
+            && pair.RetainedInstancesDelta == 20_000
+            && pair.CompatibilityMismatches.Any(mismatch =>
                 mismatch.Reason == "cross_attempt_process_id_reused"));
+    }
+
+    [Fact]
+    public void WorkloadPhaseMismatch_PreservesPairButRejectsRepeatedPooling()
+    {
+        var attempts = Attempts(640_000, 20_000, allocationBytes: null).ToArray();
+        attempts[2] = attempts[2] with
+        {
+            Compatibility = Compatibility with
+            {
+                Workload = Compatibility.Workload with { Phase = "cooldown" },
+            },
+        };
+
+        var result = RetainedGrowthEvidence.Build(Target, attempts);
+
+        result.Counts.AcceptedPairs.Should().Be(2);
+        result.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Incompatible);
+        result.Pairs[2].Availability.Should().Be(RetainedGrowthEvidenceAvailability.Available);
+        result.Pairs[2].RepeatedPoolingAvailability.Should()
+            .Be(RetainedGrowthEvidenceAvailability.Incompatible);
+        result.Pairs[2].RetainedBytesDelta.Should().Be(640_000);
+        result.Pairs[2].CompatibilityMismatches.Should().Contain(mismatch =>
+            mismatch.Dimension == "workload.phase"
+            && mismatch.Reason == "cross_attempt_workload_phase_mismatch");
+    }
+
+    [Fact]
+    public void LegacyMissingIdentity_PreservesExactPairsButMakesRepeatedEvidenceIncompatible()
+    {
+        var attempts = Attempts(640_000, 20_000, allocationBytes: null)
+            .Select(static attempt => attempt with { Compatibility = null })
+            .ToArray();
+
+        var result = RetainedGrowthEvidence.Build(Target, attempts);
+
+        result.Pairs.Should().OnlyContain(pair =>
+            pair.Availability == RetainedGrowthEvidenceAvailability.Available
+            && pair.RepeatedPoolingAvailability == RetainedGrowthEvidenceAvailability.Incompatible
+            && pair.RetainedBytesDelta == 640_000
+            && pair.CompatibilityIdentity!.QuantityRepresentation
+                == "observed-retained-shallow-bytes-and-instances"
+            && pair.CompatibilityIdentity.CompatibilitySchema == null
+            && pair.CompatibilityIdentity.RetainedBytesQuantity == null
+            && pair.CompatibilityIdentity.Workload == null);
+        result.Counts.AcceptedPairs.Should().Be(0);
+        result.Repeated.Availability.Should().Be(RetainedGrowthEvidenceAvailability.Incompatible);
+        result.Repeated.UnavailableFields.Should().Contain(field =>
+            field.Reason == "required_repeated_compatibility_identity_missing_or_mismatched");
+    }
+
+    [Fact]
+    public void BootstrapSeed_BindsVersionedCompatibilityIdentity()
+    {
+        var first = RetainedGrowthEvidence.Build(
+            Target,
+            Attempts(640_000, 20_000, allocationBytes: null));
+        var secondAttempts = Attempts(640_000, 20_000, allocationBytes: null)
+            .Select(attempt => attempt with
+            {
+                Compatibility = Compatibility with
+                {
+                    Workload = Compatibility.Workload with
+                    {
+                        Parameters = "objectCount=20000;payloadBytes=64",
+                    },
+                },
+            })
+            .ToArray();
+        var second = RetainedGrowthEvidence.Build(Target, secondAttempts);
+
+        first.Repeated.OrderedInputSha256.Should().Be(second.Repeated.OrderedInputSha256);
+        first.Repeated.CompatibilityIdentitySha256.Should()
+            .NotBe(second.Repeated.CompatibilityIdentitySha256);
+        first.Repeated.RetainedBytesBootstrapSeedSha256.Should()
+            .NotBe(second.Repeated.RetainedBytesBootstrapSeedSha256);
+        first.Repeated.RetainedInstancesBootstrapSeedSha256.Should()
+            .NotBe(second.Repeated.RetainedInstancesBootstrapSeedSha256);
+    }
+
+    [Fact]
+    public void LegacyCompatibilityIdentityJson_RemainsReadableWithoutBackfilledFields()
+    {
+        const string json = """
+            {
+              "runtimeName": "CoreCLR",
+              "runtimeVersion": "10.0.0",
+              "architecture": "x64",
+              "backend": "GcDump",
+              "targetType": { "typeFullName": "GcDumpPressureNode" },
+              "quantityRepresentation": "observed-retained-shallow-bytes-and-instances",
+              "captureSettings": "heap-snapshot-per-type-totals",
+              "independenceUnit": "process_run",
+              "comparisonAxis": "capture_time"
+            }
+            """;
+
+        var identity = JsonSerializer.Deserialize<RetainedGrowthCompatibilityIdentity>(
+            json,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        identity.Should().NotBeNull();
+        identity!.QuantityRepresentation.Should()
+            .Be("observed-retained-shallow-bytes-and-instances");
+        identity.CompatibilitySchema.Should().BeNull();
+        identity.RetainedBytesQuantity.Should().BeNull();
+        identity.RetainedInstancesQuantity.Should().BeNull();
+        identity.Workload.Should().BeNull();
+        identity.ObservationOpportunity.Should().BeNull();
     }
 
     [Fact]
@@ -336,6 +517,7 @@ public sealed class RetainedGrowthEvidenceTests
                 baselineInstances + instancesDelta))
         {
             ObservedGen2Collections = 3,
+            Compatibility = Compatibility,
         };
     }
 

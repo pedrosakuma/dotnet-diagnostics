@@ -36,7 +36,7 @@ The CLI replies with the negotiated protocol, its informational CLI version, sup
 names, and additive versioned feature capabilities:
 
 ```json
-{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"threadPoolBacklog":{"version":1,"maximumWindows":64,"defaultMinimumWindows":4,"defaultDrainTailWindows":2},"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","objectiveTargetField":"typeFilter","comparisonPairsField":"comparisonPairs","objectiveSchema":"dotnet-diagnostics/retained-growth-evidence/v1","maxAttempts":8,"minimumRobustPairs":3,"rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"cpuHotspotComparison":{"version":1,"messageType":"compare","kind":"cpu-hotspot","inputSchema":"dotnet-diagnostics/cpu-hotspot-capture-set/v1","resultSchema":"dotnet-diagnostics/cpu-hotspot-comparison/v1","maxCapturesPerSide":12,"maxMethodsPerCapture":16},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
+{"type":"hello","protocolVersion":2,"cliVersion":"<informational-version>","supportedLiveKinds":["counters","event_source","gc"],"threadPoolBacklog":{"version":1,"maximumWindows":64,"defaultMinimumWindows":4,"defaultDrainTailWindows":2},"heapGrowth":{"version":1,"available":true,"storeCapacity":32,"minimumStoreCapacity":2,"queryView":"growth","handleKind":"heap-snapshot","baselineField":"baselineHandle","objectiveTargetField":"typeFilter","comparisonPairsField":"comparisonPairs","objectiveSchema":"dotnet-diagnostics/retained-growth-evidence/v1","compatibilityIdentityField":"compatibilityIdentity","compatibilitySchema":"dotnet-diagnostics/retained-growth-compatibility/v1","maxAttempts":8,"minimumRobustPairs":3,"rankBy":["bytes","instances"],"defaultMinDeltaPct":5,"defaultTopN":25,"maxTopN":500,"requiresSameProcess":true,"requiresSameProvenance":true,"storage":"in-memory","boundedLifetime":true,"storePolicy":"shared-configured-bounded"},"cpuHandleComparison":{"version":1,"queryView":"diff","baselineHandleField":"baselineHandle","retainedHandleLimit":2,"maxTopMovers":50},"requestLatencyComparison":{"version":1,"messageType":"compare","kind":"request-latency","inputSchema":"dotnet-diagnostics/request-latency-window-set/v1","resultSchema":"dotnet-diagnostics/request-latency-comparison/v1","maxWindowsPerSide":32,"maxRetainedSamplesPerWindow":256},"cpuHotspotComparison":{"version":1,"messageType":"compare","kind":"cpu-hotspot","inputSchema":"dotnet-diagnostics/cpu-hotspot-capture-set/v1","resultSchema":"dotnet-diagnostics/cpu-hotspot-comparison/v1","maxCapturesPerSide":12,"maxMethodsPerCapture":16},"capabilities":{"investigationEvidence":{"version":1,"kinds":["cpu","allocation","off_cpu","contention","threadpool","gc","requests"],"maxItems":7,"maxItemBytes":1048576,"maxTotalBytes":4194304}}}
 ```
 
 Clients may use `cliVersion` for feature-compatibility guidance and `supportedLiveKinds` to gate
@@ -714,7 +714,7 @@ To request the objective retained-growth contract instead of the legacy ranked-g
 name one exact managed type:
 
 ```json
-{"type":"query","requestId":"growth-objective-1","handle":"<current-handle>","baselineHandle":"<baseline-handle>","view":"growth","typeFilter":"Example.RetainedNode","comparisonPairs":[{"attemptId":"run-2","baselineHandle":"<run-2-baseline>","currentHandle":"<run-2-current>","observedGen2Collections":2,"allocation":{"sampledBytes":11700000,"sampleEvents":1200,"lostOrDropped":0}},{"attemptId":"run-3","outcome":"failed","failureReason":"target exited before the current capture"}]}
+{"type":"query","requestId":"growth-objective-1","handle":"<current-handle>","baselineHandle":"<baseline-handle>","view":"growth","typeFilter":"Example.RetainedNode","compatibilityIdentity":{"schema":"dotnet-diagnostics/retained-growth-compatibility/v1","workload":{"scenario":"retained-growth-known-shape","scenarioVersion":"1","workload":"apply-retained-objects","workloadVersion":"1","parameters":"objectCount=20000;payloadBytes=32","phase":"post-stabilization"},"observationOpportunity":{"operations":20000,"elapsedSeconds":10}},"comparisonPairs":[{"attemptId":"run-2","baselineHandle":"<run-2-baseline>","currentHandle":"<run-2-current>","observedGen2Collections":2,"allocation":{"sampledBytes":11700000,"sampleEvents":1200,"lostOrDropped":0},"compatibilityIdentity":{"schema":"dotnet-diagnostics/retained-growth-compatibility/v1","workload":{"scenario":"retained-growth-known-shape","scenarioVersion":"1","workload":"apply-retained-objects","workloadVersion":"1","parameters":"objectCount=20000;payloadBytes=32","phase":"post-stabilization"},"observationOpportunity":{"operations":20000,"elapsedSeconds":10}}},{"attemptId":"run-3","outcome":"failed","failureReason":"target exited before the current capture"}]}
 ```
 
 This response returns `objectiveRetainedGrowth` with schema
@@ -731,10 +731,32 @@ gate avoids treating repeated windows from one process as independent runs. Fail
 attempts retain their `attemptId`, `outcome`, and `failureReason` in the denominator without
 replacement. Three compatible completed process-run pairs are required for
 repeated median, MAD, and deterministic 95% percentile-bootstrap evidence; otherwise
-`availability:"insufficient_observations"` is explicit. Runtime, version, architecture, backend,
-target identity, quantity representation, capture settings, independence unit, and comparison axis
-form the compatibility identity; mismatches and rejected-pair counts are returned rather than
-silently pooled.
+`availability:"insufficient_observations"` is explicit when valid identity is present but too few
+pairs remain, while missing or mismatched required identity reports `incompatible`. Runtime,
+version, architecture, backend,
+target identity, separate retained-byte and retained-instance quantity descriptors, capture settings,
+scenario/workload version and parameters, workload phase, operation count, elapsed observation
+opportunity, independence unit, and comparison axis form the compatibility identity. The quantities
+are `retained-shallow-bytes` in `bytes` and `retained-instances` in `instances`, aggregated as
+`paired-delta-then-window-median` and normalized as
+`absolute-over-declared-observation-opportunity`. Every completed pair supplies its own
+`compatibilityIdentity`; dimensions are compared before pooling. A mismatch leaves that pair's exact
+baseline/current values and deltas available but sets `repeatedPoolingAvailability:"incompatible"`,
+records the mismatches, and excludes the pair from repeated estimates.
+
+Requests produced before this compatibility addition remain readable. They preserve the original
+runtime/backend/type/representation identity and exact single-pair evidence, but missing workload,
+phase, quantity, or observation-opportunity fields are not backfilled. Such pairs report
+`repeatedPoolingAvailability:"incompatible"`, contribute zero accepted repeated pairs, and make
+repeated estimates unavailable with
+`required_repeated_compatibility_identity_missing_or_mismatched`. This is the migration boundary:
+recapture or resubmit explicit v1 compatibility identity to obtain repeated estimates; do not infer
+current defaults for old evidence.
+
+Available bootstrap output records `compatibilityIdentitySha256`, `bootstrapPrng`, and
+`bootstrapQuantileRule`. The deterministic retained-byte and retained-instance seeds bind the
+versioned compatibility identity as well as the ordered pair digest, method version, evidence schema,
+resample count, confidence level, and quantity ID.
 
 Optional per-attempt `allocation` fields are a separate sampled-allocation record. They never
 contribute to retained bytes or instances. `observedGen2Collections` records measured observer

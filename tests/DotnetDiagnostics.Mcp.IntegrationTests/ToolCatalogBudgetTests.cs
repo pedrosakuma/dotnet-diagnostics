@@ -784,6 +784,16 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
                         11_000_000 + (index * 100_000),
                         1_000 + index,
                         LostOrDropped: 0),
+                    Compatibility = new(
+                        RetainedGrowthCompatibilitySchemas.V1,
+                        new(
+                            "retained-growth-known-shape",
+                            "1",
+                            "apply-retained-objects",
+                            "1",
+                            "objectCount=20000;payloadBytes=32",
+                            "post-stabilization"),
+                        new(20_000, 60)),
                 };
             })
             .ToArray();
