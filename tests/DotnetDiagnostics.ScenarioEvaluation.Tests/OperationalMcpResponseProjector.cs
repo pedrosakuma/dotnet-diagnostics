@@ -33,9 +33,9 @@ internal static class OperationalMcpResponseProjector
         }
 
         ApplyMutations(root, arm, projection.ResponseMutations);
-        didProject = arm == OperationalMcpArm.NoStatisticalFields;
+        didProject = arm != OperationalMcpArm.CompleteCurrent;
         projectedSchema = schema;
-        return arm == OperationalMcpArm.CurrentIndicator
+        return arm == OperationalMcpArm.CompleteCurrent
             ? raw
             : root.ToJsonString();
     }
@@ -61,29 +61,23 @@ internal static class OperationalMcpResponseProjector
         {
             projection.Family,
             projection.Schema,
-            Version = arm == OperationalMcpArm.NoStatisticalFields
-                ? projection.ControlVersion
-                : projection.CurrentVersion,
-            Source = arm == OperationalMcpArm.NoStatisticalFields
-                ? projection.ControlSource
-                : projection.CurrentSourceCommit,
+            Version = projection.Versions[arm],
+            Source = arm == OperationalMcpArm.CompleteCurrent
+                ? projection.CurrentSourceCommit
+                : projection.Sources[arm],
             Response = projection.ResponseMutations.Select(value => new
             {
                 value.JsonPointer,
                 value.Operation,
                 value.ExpectedKind,
-                Value = arm == OperationalMcpArm.NoStatisticalFields
-                    ? value.ControlValue
-                    : value.CurrentValue,
+                Value = ProjectedValue(value, arm),
             }),
             Tools = projection.ToolDefinitionMutations.Select(value => new
             {
                 value.JsonPointer,
                 value.Operation,
                 value.ExpectedKind,
-                Value = arm == OperationalMcpArm.NoStatisticalFields
-                    ? value.ControlValue
-                    : value.CurrentValue,
+                Value = ProjectedValue(value, arm),
             }),
         });
 
@@ -108,7 +102,7 @@ internal static class OperationalMcpResponseProjector
                     + $"actual={actual?.ToJsonString() ?? "missing"}.");
             }
 
-            if (arm == OperationalMcpArm.CurrentIndicator)
+            if (!mutation.Arms.Contains(arm))
             {
                 continue;
             }
@@ -118,9 +112,30 @@ internal static class OperationalMcpResponseProjector
                 Remove(root, mutation.JsonPointer);
             }
             else if (string.Equals(mutation.Operation, "replace", StringComparison.Ordinal)
-                && mutation.ControlValue is { } controlValue)
+                && mutation.Values?.TryGetValue(arm, out var projectedValue) == true)
             {
-                Replace(root, mutation.JsonPointer, Expand(root, controlValue));
+                Replace(root, mutation.JsonPointer, Expand(root, projectedValue));
+            }
+            else if (string.Equals(mutation.Operation, "select", StringComparison.Ordinal)
+                && actual is JsonObject jsonObject
+                && mutation.Values?.TryGetValue(arm, out var selectedValue) == true)
+            {
+                var selected = JsonNode.Parse(selectedValue.GetRawText())?.AsArray()
+                    ?? throw new InvalidDataException(
+                        $"Projection mutation '{mutation.JsonPointer}' must select an array of properties.");
+                var names = selected
+                    .Select(value => value?.GetValue<string>()
+                        ?? throw new InvalidDataException(
+                            $"Projection mutation '{mutation.JsonPointer}' contains an invalid property name."))
+                    .ToHashSet(StringComparer.Ordinal);
+                Replace(
+                    root,
+                    mutation.JsonPointer,
+                    new JsonObject(jsonObject
+                        .Where(property => names.Contains(property.Key))
+                        .Select(property => KeyValuePair.Create(
+                            property.Key,
+                            property.Value?.DeepClone()))));
             }
             else
             {
@@ -130,11 +145,24 @@ internal static class OperationalMcpResponseProjector
         }
     }
 
+    private static JsonElement? ProjectedValue(
+        OperationalProjectionMutation mutation,
+        OperationalMcpArm arm)
+        => mutation.Arms.Contains(arm)
+            ? string.Equals(mutation.Operation, "remove", StringComparison.Ordinal)
+                ? null
+                : mutation.Values?[arm]
+            : mutation.CurrentValue;
+
     private static bool MatchesKind(JsonNode value, string expectedKind)
         => expectedKind switch
         {
             "string" => value is JsonValue jsonValue
                 && jsonValue.TryGetValue<string>(out _),
+            "number" => value is JsonValue numericValue
+                && (numericValue.TryGetValue<int>(out _)
+                    || numericValue.TryGetValue<long>(out _)
+                    || numericValue.TryGetValue<double>(out _)),
             "object" => value is JsonObject,
             "array" => value is JsonArray,
             _ => false,
