@@ -34,7 +34,11 @@ public enum OperationalMcpEligibility
 public enum OperationalMcpArm
 {
     NoStatisticalFields,
-    CurrentIndicator,
+    CategoricalQuality,
+    CategoricalMedianMad,
+    CategoricalJaccard,
+    CategoricalSpearman,
+    CompleteCurrent,
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpCaseClass>))]
@@ -138,29 +142,27 @@ public sealed record OperationalMcpInventoryEntry(
     string View,
     string Schema,
     string Reason,
-    string? ExpectedControlToolDefinitionFingerprint,
-    string? ExpectedCurrentToolDefinitionFingerprint);
+    IReadOnlyDictionary<OperationalMcpArm, string>? ExpectedToolDefinitionFingerprints);
 
 public sealed record OperationalProjectionMutation(
     string JsonPointer,
     string Operation,
     string ExpectedKind,
-    JsonElement? ControlValue,
-    JsonElement? CurrentValue);
+    JsonElement? CurrentValue,
+    IReadOnlyList<OperationalMcpArm> Arms,
+    IReadOnlyDictionary<OperationalMcpArm, JsonElement>? Values);
 
 public sealed record OperationalMcpProjection(
     OperationalMcpFamily Family,
     string Schema,
-    string ControlVersion,
-    string CurrentVersion,
-    string ControlSource,
+    IReadOnlyDictionary<OperationalMcpArm, string> Versions,
+    IReadOnlyDictionary<OperationalMcpArm, string> Sources,
     string CurrentSourceCommit,
     IReadOnlyList<OperationalProjectionMutation> ResponseMutations,
     IReadOnlyList<OperationalProjectionMutation> ToolDefinitionMutations)
 {
-    public string ExpectedControlFingerprint { get; init; } = "unavailable";
-
-    public string ExpectedCurrentFingerprint { get; init; } = "unavailable";
+    public IReadOnlyDictionary<OperationalMcpArm, string> ExpectedFingerprints { get; init; } =
+        new Dictionary<OperationalMcpArm, string>();
 }
 
 public sealed record OperationalMcpDecisionRule(
@@ -285,8 +287,7 @@ public sealed record OperationalMcpRunReport(
     string ProtocolFingerprint,
     string InventoryFingerprint,
     string ProjectionFingerprint,
-    string ControlProjectionFingerprint,
-    string CurrentProjectionFingerprint,
+    string ArmProjectionFingerprint,
     string CatalogFingerprint,
     string ToolDefinitionFingerprint,
     string CaseId,
@@ -309,15 +310,35 @@ public sealed record OperationalMcpRunReport(
 public sealed record OperationalDimensionDelta(
     string Dimension,
     string NoStatisticalFields,
-    string CurrentIndicator,
+    string CompleteCurrent,
     string Interpretation);
 
 public sealed record OperationalFamilyConclusion(
     OperationalMcpFamily Family,
     OperationalPilotConclusion Conclusion,
     int NoStatisticalFieldsAttempts,
-    int CurrentIndicatorAttempts,
+    int CompleteCurrentAttempts,
     IReadOnlyList<OperationalDimensionDelta> Dimensions,
+    IReadOnlyList<string> Limitations);
+
+public sealed record OperationalArmDimension(
+    string Dimension,
+    string Value,
+    string Interpretation);
+
+public sealed record OperationalFactorizedArmConclusion(
+    OperationalMcpArm Arm,
+    OperationalPilotConclusion Conclusion,
+    int Attempts,
+    int AssessableAttempts,
+    IReadOnlyList<OperationalArmDimension> Dimensions,
+    IReadOnlyList<string> Limitations);
+
+public sealed record OperationalFactorizedFamilyConclusion(
+    OperationalMcpFamily Family,
+    OperationalPilotConclusion Conclusion,
+    OperationalMcpArm? SelectedArm,
+    IReadOnlyList<OperationalFactorizedArmConclusion> Arms,
     IReadOnlyList<string> Limitations);
 
 public sealed record OperationalMcpPilotReport(
@@ -325,8 +346,7 @@ public sealed record OperationalMcpPilotReport(
     string ProtocolFingerprint,
     string InventoryFingerprint,
     string ProjectionFingerprint,
-    string ControlProjectionFingerprint,
-    string CurrentProjectionFingerprint,
+    IReadOnlyDictionary<OperationalMcpArm, string> ArmProjectionFingerprints,
     string ProductFingerprint,
     string ModelProvider,
     string Model,
@@ -342,6 +362,9 @@ public sealed record OperationalMcpPilotReport(
     public OperationalMcpPreflightReport? AssessorPreflight { get; init; }
 
     public string EvaluatorCommit { get; init; } = "unavailable";
+
+    public IReadOnlyList<OperationalFactorizedFamilyConclusion> FactorizedFamilyConclusions
+        { get; init; } = [];
 }
 
 internal static class OperationalMcpJson

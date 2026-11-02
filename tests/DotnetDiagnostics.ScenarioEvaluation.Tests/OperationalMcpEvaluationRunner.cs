@@ -148,8 +148,9 @@ internal static class OperationalMcpEvaluationRunner
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
             OperationalMcpProtocolLoader.InventoryFingerprint(protocol),
             OperationalMcpProtocolLoader.ProjectionFingerprint(protocol),
-            ResponseProjectionFingerprint(protocol, OperationalMcpArm.NoStatisticalFields),
-            ResponseProjectionFingerprint(protocol, OperationalMcpArm.CurrentIndicator),
+            Enum.GetValues<OperationalMcpArm>().ToDictionary(
+                arm => arm,
+                arm => ResponseProjectionFingerprint(protocol, arm)),
             protocol.ExpectedProductFingerprint,
             configuration.Provider,
             configuration.Model,
@@ -164,7 +165,7 @@ internal static class OperationalMcpEvaluationRunner
             conclusions,
             [
                 "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, universal product claim, or automatic product-adoption verdict.",
-                "Protocol 4 compares the current post-#1342 allocation statistical fields against a deterministic no-statistical-fields control; it does not reinterpret the preserved #1344 wording experiment.",
+                "Protocol 5 factorizes the current post-#1342 allocation measurement-quality block into six deterministic arms; it does not reinterpret the preserved #1340, #1344, or #1346 experiments.",
                 "The diagnosing and assessing phases use different frozen models and isolated contexts; that does not eliminate shared-provider or training-data bias.",
                 "Fresh processes and captures reduce dependence but do not eliminate platform, scheduler, JIT, EventPipe, symbol, or workload variability.",
                 "Sample recognition cannot be ruled out because repository-owned workload symbols may appear in MCP evidence.",
@@ -190,6 +191,10 @@ internal static class OperationalMcpEvaluationRunner
         {
             AssessorPreflight = assessorPreflight,
             EvaluatorCommit = BlindedAgentHarness.CurrentProductCommit,
+            FactorizedFamilyConclusions = OperationalMcpFactorizedConclusion.Create(
+                protocol,
+                conclusionAttempts,
+                heldout.Length > 0),
         };
         OperationalMcpJson.Write(Path.Combine(outputRoot, "pilot-report.json"), report);
         return report;
@@ -301,8 +306,7 @@ internal static class OperationalMcpEvaluationRunner
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
             OperationalMcpProtocolLoader.InventoryFingerprint(protocol),
             OperationalMcpProtocolLoader.ProjectionFingerprint(protocol),
-            ResponseProjectionFingerprint(protocol, OperationalMcpArm.NoStatisticalFields),
-            ResponseProjectionFingerprint(protocol, OperationalMcpArm.CurrentIndicator),
+            ResponseProjectionFingerprint(protocol, arm),
             gateway?.CatalogFingerprint ?? "unavailable",
             gateway?.ToolDefinitionFingerprint ?? "unavailable",
             testCase.Id,
@@ -373,7 +377,7 @@ internal static class OperationalMcpEvaluationRunner
         var control = attempts.Where(value =>
             value.Arm == OperationalMcpArm.NoStatisticalFields).ToArray();
         var current = attempts.Where(value =>
-            value.Arm == OperationalMcpArm.CurrentIndicator).ToArray();
+            value.Arm == OperationalMcpArm.CompleteCurrent).ToArray();
         if (control.Length == 0 || current.Length == 0)
         {
             return new(
