@@ -58,8 +58,8 @@ public sealed partial class QuerySnapshotTool
     internal const string AllocationReproducibilityView = "allocation-reproducibility";
 
     // Heap-snapshot view that diffs two LIVE heap snapshots N seconds apart and ranks the types
-    // that grew by retained bytes / instances, with retention-path drill-down on the top growers
-    // (issue #463 — leak hunting). Like `diff`, it needs a second handle (baselineHandle).
+    // that grew by retained bytes / instances, with retention-path drill-down on the top growers.
+    // Like `diff`, it needs a second handle (baselineHandle).
     internal const string GrowthView = "growth";
 
     // Every view the cpu-sample / allocation-sample / native-alloc-sample / native-lock-contention-sample kinds accept (analytics
@@ -600,26 +600,27 @@ public sealed partial class QuerySnapshotTool
         }
 
         var growth = HeapGrowthDiff.Build(baseline, baselineHandle!, current, handle, normalizedRank, minDeltaPct, effectiveTopN);
+        var observation = HeapGrowthObservation.From(growth);
 
         var topGrower = growth.Growers.Count > 0 ? growth.Growers[0] : null;
         var summary = topGrower is null
-            ? $"No types grew (>= {minDeltaPct}% by {normalizedRank}) between baseline '{baselineHandle}' and current '{handle}' over {growth.Elapsed.TotalSeconds:F1}s — verdict {growth.Verdict}."
-            : $"Heap grew {growth.TotalHeapGrowthBytes:N0} bytes over {growth.Elapsed.TotalSeconds:F1}s (pid {growth.ProcessId}); {growth.TotalGrowers} type(s) grew, top {growth.Growers.Count} returned ranked by {normalizedRank}. Top grower `{topGrower.TypeFullName}` +{topGrower.BytesDelta:N0} bytes / +{topGrower.InstancesDelta:N0} instances. Verdict {growth.Verdict}.";
+            ? $"Observed no types meeting the positive-growth filter (>= {minDeltaPct}% by {normalizedRank}) between baseline '{baselineHandle}' and current '{handle}' over {growth.Elapsed.TotalSeconds:F1}s. Pairwise retained-growth observation only; workload equivalence, leak status, health, regression, causality, and future trajectory are not assessed."
+            : $"Observed a {growth.TotalHeapGrowthBytes:N0}-byte heap delta over {growth.Elapsed.TotalSeconds:F1}s (pid {growth.ProcessId}); {growth.TotalGrowers} type(s) met the positive-growth filter, with the top {growth.Growers.Count} returned by {normalizedRank}. Top observed grower `{topGrower.TypeFullName}`: +{topGrower.BytesDelta:N0} bytes / +{topGrower.InstancesDelta:N0} instances. Pairwise retained-growth observation only; workload equivalence, leak status, health, regression, causality, and future trajectory are not assessed.";
 
         if (topGrower is null)
         {
-            return AsObjectEnvelope(DiagnosticResult.Ok<object>(growth, summary));
+            return AsObjectEnvelope(DiagnosticResult.Ok<object>(observation, summary));
         }
 
         if (topGrower.RetentionPaths is { Count: > 0 })
         {
-            return AsObjectEnvelope(DiagnosticResult.Ok<object>(growth, summary));
+            return AsObjectEnvelope(DiagnosticResult.Ok<object>(observation, summary));
         }
 
         var hint = new NextActionHint("inspect_heap",
             "Re-capture both snapshots with includeRetentionPaths=true to see what's holding the top growers.",
             new Dictionary<string, object?> { ["processId"] = growth.ProcessId, ["source"] = "live", ["includeRetentionPaths"] = true });
-        return AsObjectEnvelope(DiagnosticResult.Ok<object>(growth, summary, hint));
+        return AsObjectEnvelope(DiagnosticResult.Ok<object>(observation, summary, hint));
     }
 
     // Legacy typed pairwise (N=2 baselineHandle) kinds handled by ComparablePairwiseSampleDiff in their own

@@ -626,17 +626,28 @@ block carries measured facts for the model to interpret: `backend`, `durationSec
 (signals absent from the capture, e.g. no work-rate signal). A `null` value means not measured,
 never zero.
 
-`heap-snapshot` `view="growth"` is the retention-aware **live heap leak hunt** (issue #463).
+`heap-snapshot` `view="growth"` is a retention-aware **pairwise live heap growth observation**
+(issues #463 and #1352).
 Capture two live heap snapshots N seconds apart — `inspect_heap(source="live", includeRetentionPaths=true)` —
 then call `query_snapshot(handle=<later>, view="growth", baselineHandle=<earlier>)`. It ranks the
 managed types that *grew* by retained `bytes` (default) or `instances` (`rankBy`), reporting per-type
 baseline/current/delta for both dimensions, and attaches the retention chains recorded on the *later*
 snapshot to the top growers so the model sees "which types grew, **and what's holding them**" in one
 round-trip. Only positive growth at or above `minDeltaPct` (default `5.0`) surfaces; `topN` (default `25`)
-caps the ranked rows while `totalGrowers` reports the full count. The verdict is `leak_suspected` when any
-type grew, else `stable`. Unlike `view="diff"` — which ranks by percentage and can bury a large
-absolute-but-modest-% leak — `growth` ranks strictly by absolute growth, the signal that matters for a
-steady-state leak. Both handles must be `heap-snapshot` kind; a missing/expired `baselineHandle` returns
+caps the ranked rows while `totalGrowers` reports the full count. The MCP data projection is identified by
+`schema="dotnet-diagnostics/mcp-heap-growth-observation/v2"` and intentionally has no `verdict` or
+`objectiveRetainedGrowth` field. The baseline/current heap totals, per-type byte and instance deltas,
+capture quality, notes, and bounded retention paths remain available.
+
+This one capture pair does not establish equivalent workload, repeated variability, a leak, health,
+regression, causality, operational importance, or future trajectory. The summary states that boundary
+instead of interpreting any positive row as `leak_suspected` or an empty filtered result as `stable`.
+Existing consumers of the former unversioned MCP shape should migrate by selecting the v2 `schema` and
+reading the objective totals/deltas; legacy Core/CLI compatibility members and old serialized artifacts
+are not rewritten, and the Core/CLI-only `dotnet-diagnostics/retained-growth-evidence/v1` contract is not
+exposed through MCP. Unlike `view="diff"` — which ranks by percentage and can bury a large
+absolute-but-modest-% increase — `growth` ranks strictly by absolute growth for follow-up prioritization.
+Both handles must be `heap-snapshot` kind; a missing/expired `baselineHandle` returns
 the standard `InvalidArgument` / `HandleExpired` envelope. Requires `heap-read` plus the
 literal `sensitive-heap-read` modifier because retention paths expose heap topology and addresses.
 
