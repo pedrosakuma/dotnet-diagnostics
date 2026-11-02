@@ -119,3 +119,19 @@ dotnet test tests\DotnetDiagnostics.ScenarioEvaluation.Tests\ `
 The ordinary Windows live test runs one capture per scenario as a bounded smoke
 check. Supplying the report path defaults to six captures unless the repetition
 variable is set explicitly.
+
+## Product contract delivered by #1319
+
+The follow-up shipped
+`dotnet-diagnostics/contention-concentration-evidence/v1` in Core and ordinary
+CLI contention output. It reports delivered top-1/top-3 wait-duration shares,
+active-window coverage, bounded wait quantiles, availability, counts,
+assumptions, limitations, and optional capture-level Wilson owner-overlap
+evidence. Source loss, retained-inventory truncation, missing lock identity,
+and no observed contention remain explicit non-signal states.
+
+The descriptive shapes select one-lock, broad-lock, or time-aligned drilldown;
+they do not establish severity, cause, regression, starvation, or health. The
+MCP contention projection intentionally preserves its prior shape, and the
+BenchmarkDotNet artifact intentionally omits this CLI vertical slice; tests
+enforce both boundaries. No MCP tool or catalog schema was added.

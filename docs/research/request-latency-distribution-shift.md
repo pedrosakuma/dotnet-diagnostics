@@ -100,3 +100,19 @@ dotnet test tests\DotnetDiagnostics.ScenarioEvaluation.Tests\DotnetDiagnostics.S
   -c Release --no-build `
   --filter "FullyQualifiedName~RequestLatencyLiveEvidenceTests"
 ```
+
+## Product contract delivered by #1317
+
+The follow-up shipped `dotnet-diagnostics/request-latency-window-set/v1` and
+`dotnet-diagnostics/request-latency-comparison/v1` in Core. CLI compare and the
+existing MCP `compare_to_baseline` placement use the same calculation and
+retain explicit target, backend, quantity/unit/normalization, capture, workload,
+bounded-window independence, pairing, and comparison-axis identity.
+
+Completed, error, censored, missing-completion, failed/aborted-window, and loss
+counts remain separate. Approximate, lossy, incomplete, unpaired, or
+incompatible evidence cannot produce paired inference. Human, JSON, saved, and
+MCP output report objective p50/p95/p99 movement without a regression,
+significance, causation, equivalent-load, or operational-importance verdict.
+No MCP tool was added; the existing unconstrained comparison data envelope
+keeps the registered catalog delta at zero.

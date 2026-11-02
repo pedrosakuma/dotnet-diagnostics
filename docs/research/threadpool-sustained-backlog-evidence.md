@@ -1,10 +1,10 @@
 # ThreadPool sustained backlog versus transient burst
 
 Issue [#1312](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1312)
-evaluates whether bounded window-level statistics change a safe ThreadPool
-troubleshooting action beyond a single raw counter observation. This is
-ScenarioEvaluation evidence only; it does not change Core, CLI, MCP, VS Code, or
-BenchmarkDotNet output.
+evaluated whether bounded window-level statistics change a safe ThreadPool
+troubleshooting action beyond a single raw counter observation. At the time of
+the experiment this was ScenarioEvaluation evidence only; the later product
+contract is recorded below.
 
 ## Verdict
 
@@ -106,3 +106,21 @@ and JSON rendering. MCP must reuse the existing counter evidence path, and VS Co
 must continue consuming CLI JSONL. That follow-up must not add a new MCP tool,
 automatic capture, starvation verdict, universal threshold, or broad ThreadPool
 semantics rewrite.
+
+## Product contract delivered by #1323
+
+The follow-up shipped
+`dotnet-diagnostics/threadpool-backlog-evidence/v1` in Core and CLI counter
+collection. The caller supplies the queue level; the result reports bounded
+occupancy, contiguous duration, drained tail, independent queue and worker
+movement, optional collector p95, and same-capture runtime-reason provenance.
+EventPipe/dispatch loss, processing failure, retention truncation, irregular
+cadence, or insufficient windows makes action-relevant fields unavailable.
+Queue growth never establishes starvation and does not automatically collect
+waits or stacks.
+
+The typed record is additive on the existing MCP counter output; it adds no
+tool but does consume registered output-schema bytes. VS Code may consume the
+CLI JSONL field while leaving collection and calculation in Core/CLI.
+BenchmarkDotNet's separate ThreadPool runtime-adjustment-reason analysis is
+not this bounded backlog contract and must not be treated as equivalent.
