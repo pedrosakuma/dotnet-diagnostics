@@ -142,3 +142,21 @@ human/JSON rendering needed by a concrete troubleshooting decision. It must pres
 identity, paired process-run counts, unavailable/degraded states, allocation traffic separation,
 root/path availability, observer-effect limitations, and the no-leak-verdict posture. No new MCP
 tool is justified.
+
+## Product contract delivered by #1325
+
+The follow-up shipped `dotnet-diagnostics/retained-growth-evidence/v1` in Core
+and the CLI JSONL growth query for one exact managed type. It preserves
+baseline/current shallow bytes and instances, signed deltas, repeated
+process-run median/MAD/bootstrap evidence, failed/aborted attempts, allocation
+separation, root/path availability, observer effects, and explicit
+unavailable/degraded states. The objective response omits the legacy ranked
+growers and `leak_suspected`/`stable` verdict.
+
+The VS Code retained-memory lens delivered by #1260 consumes that CLI JSONL
+record and does not calculate statistics or collect EventPipe data in
+TypeScript. The objective contract did not add an MCP tool or typed MCP output;
+its measured `tools/list` catalog delta is zero. The older MCP
+`query_snapshot(view="growth")` ranked-grower contract remains a separate
+legacy surface and is not evidence that the objective contract is exposed
+through MCP.
