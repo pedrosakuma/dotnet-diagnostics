@@ -140,6 +140,25 @@ verdict, add an MCP tool, or make the VS Code extension collect EventPipe data. 
 must reuse existing CPU sample/query contracts and the extension must continue to
 consume CLI JSONL.
 
+## Product contract delivered by #1331
+
+The follow-up shipped bounded
+`dotnet-diagnostics/cpu-hotspot-capture/v1`,
+`dotnet-diagnostics/cpu-hotspot-capture-set/v1`, and
+`dotnet-diagnostics/cpu-hotspot-comparison/v1` records in Core. CLI compare and
+the existing MCP `compare_to_baseline` placement use the same calculation.
+One separately started and stopped compatible capture is the independence
+unit; samples never increase the inferential count.
+
+The product contract retains total and unresolved-exclusive sample counts,
+selected inclusive sample share, capture-level variability, paired share
+deltas, top-2 overlap, and selected-method rank stability. Backend/evidence
+kind, duration, process run, non-overlap, workload/offered load, quantity, and
+comparison axis are strict compatibility dimensions. Shares remain normalized
+retained-sample fractions, not CPU time or throughput-normalized performance.
+No MCP tool was added, VS Code does not calculate the comparison, and the
+existing unconstrained MCP comparison envelope keeps catalog delta at zero.
+
 ## Reproduction
 
 ```powershell
