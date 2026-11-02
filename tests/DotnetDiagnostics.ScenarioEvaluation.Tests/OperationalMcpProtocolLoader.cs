@@ -6,26 +6,28 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 internal static class OperationalMcpProtocolLoader
 {
-    public const int CurrentSchemaVersion = 3;
-    public const int CurrentRunSchemaVersion = 3;
-    public const int CurrentPilotSchemaVersion = 3;
-    internal const string FrozenProtocolVersion = "3.0.0";
+    public const int CurrentSchemaVersion = 4;
+    public const int CurrentRunSchemaVersion = 4;
+    public const int CurrentPilotSchemaVersion = 4;
+    internal const string FrozenProtocolVersion = "4.0.0";
     internal const string FrozenProtocolFingerprint =
-        "14acb71144eb46de2eeecc02fa539715bef4e836e91cbb3ae32ac86456ec5d3e";
+        "3f59d232f8a8353d4acab2fad66e3b04c9ce47743f42609b2bb2b03ca8fe78c3";
     internal const string FrozenInventoryFingerprint =
-        "609784811346f0884822ab5cdf89f16224cce0dc6b3dd364d753b5ef7566221a";
+        "3cd676e89ff0caa57d8091335b955fd0975903691bd0d12911bf7e5af53f143e";
     internal const string FrozenProjectionFingerprint =
-        "8ac13f73347459025b031af8a3bb5883c5fdbe4060ae324e07f6c56ee3bd198b";
+        "1e1c806d2ef04f826eddd1ad73df69a5cef129124a2025b2bb3ab707af7a01c4";
     internal const string PreservedV1FileSha256 =
         "c95d63300432d0d09e2b65bcab5b9fae0c2cfe8ee9ee2fef456714975b939891";
     internal const string PreservedV2FileSha256 =
         "02f06374fda5bcc9d2dcaadc0087af00e35d1b2f3b6679d49d9c559fc0cd1edd";
+    internal const string PreservedV3FileSha256 =
+        "00d4336e2dea90a2eff1b49cfa05919fac22cbf4a2ede60a25d604718a85e616";
 
     public static string DefaultPath
         => Path.Combine(
             AppContext.BaseDirectory,
             "OperationalMcp",
-            "operational-mcp-allocation-wording-ab-v3.protocol.json");
+            "operational-mcp-allocation-statistical-fields-ab-v4.protocol.json");
 
     public static string PreservedV1Path
         => Path.Combine(
@@ -38,6 +40,12 @@ internal static class OperationalMcpProtocolLoader
             AppContext.BaseDirectory,
             "OperationalMcp",
             "operational-mcp-ab-v2.protocol.json");
+
+    public static string PreservedV3Path
+        => Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-allocation-wording-ab-v3.protocol.json");
 
     public static OperationalMcpProtocol LoadDefault()
     {
@@ -78,6 +86,17 @@ internal static class OperationalMcpProtocolLoader
         {
             throw new InvalidDataException(
                 "The preserved operational MCP protocol 2.0.0 file changed.");
+        }
+    }
+
+    public static void ValidatePreservedV3()
+    {
+        var fileSha256 = Convert.ToHexStringLower(
+            SHA256.HashData(File.ReadAllBytes(PreservedV3Path)));
+        if (!string.Equals(fileSha256, PreservedV3FileSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The preserved operational MCP protocol 3.0.0 file changed.");
         }
     }
 
@@ -145,8 +164,8 @@ internal static class OperationalMcpProtocolLoader
         var bytes = SHA256.HashData(
             Encoding.UTF8.GetBytes($"{protocol.ArmOrderSeed}\n{caseId}"));
         return (bytes[0] & 1) == 0
-            ? [OperationalMcpArm.PriorWording, OperationalMcpArm.HardenedWording]
-            : [OperationalMcpArm.HardenedWording, OperationalMcpArm.PriorWording];
+            ? [OperationalMcpArm.NoStatisticalFields, OperationalMcpArm.CurrentIndicator]
+            : [OperationalMcpArm.CurrentIndicator, OperationalMcpArm.NoStatisticalFields];
     }
 
     public static ScenarioManifest ToScenarioManifest(OperationalMcpCase testCase)
@@ -154,7 +173,7 @@ internal static class OperationalMcpProtocolLoader
         if (testCase.Family != OperationalMcpFamily.AllocationReproducibility)
         {
             throw new InvalidDataException(
-                "Protocol 3.0.0 is allocation-only.");
+                "Protocol 4.0.0 is allocation-only.");
         }
 
         const string kind = "allocation";
@@ -239,12 +258,12 @@ internal static class OperationalMcpProtocolLoader
             || protocol.Budgets.MaximumAssessmentTransportOutputBytes is < 1 or > 1_048_576)
         {
             throw new InvalidDataException(
-                "The operational MCP v2 preflight and byte budgets must be finite and bounded.");
+                "The operational MCP preflight and byte budgets must be finite and bounded.");
         }
 
         var models = protocol.Models
             ?? throw new InvalidDataException(
-                "The operational MCP v2 protocol must freeze diagnosing and assessor models.");
+                "The operational MCP protocol must freeze diagnosing and assessor models.");
         Require(models.Provider, "models.provider");
         Require(models.DiagnosingModel, "models.diagnosingModel");
         Require(models.AssessorModel, "models.assessorModel");
@@ -266,7 +285,17 @@ internal static class OperationalMcpProtocolLoader
                 StringComparison.Ordinal))
         {
             throw new InvalidDataException(
-                "The frozen v3 prompt or transport-protocol fingerprint changed.");
+                "The frozen prompt or transport-protocol fingerprint changed.");
+        }
+
+        if (protocol.DecisionRule.MaterialCostRelativeIncrease is <= 0 or > 1
+            || protocol.DecisionRule.MaterialMcpPayloadByteIncrease < 1
+            || protocol.DecisionRule.MaterialModelTransportByteIncrease < 1
+            || protocol.DecisionRule.MaterialWallTimeSecondIncrease <= 0
+            || protocol.DecisionRule.MaterialToolCallIncrease < 1)
+        {
+            throw new InvalidDataException(
+                "The operational MCP decision rule must freeze positive material-cost thresholds.");
         }
 
         RequireFingerprint(
@@ -296,7 +325,7 @@ internal static class OperationalMcpProtocolLoader
         if (!eligible.SetEquals([OperationalMcpFamily.AllocationReproducibility]))
         {
             throw new InvalidDataException(
-                "The frozen v3 protocol must contain only allocation reproducibility.");
+                "The frozen v4 protocol must contain only allocation reproducibility.");
         }
 
         foreach (var entry in protocol.Inventory)
@@ -304,14 +333,14 @@ internal static class OperationalMcpProtocolLoader
             if (entry.Eligibility == OperationalMcpEligibility.Eligible)
             {
                 RequireFingerprint(
-                    entry.ExpectedPriorToolDefinitionFingerprint,
-                    $"{entry.Family}.expectedPriorToolDefinitionFingerprint");
+                    entry.ExpectedControlToolDefinitionFingerprint,
+                    $"{entry.Family}.expectedControlToolDefinitionFingerprint");
                 RequireFingerprint(
-                    entry.ExpectedHardenedToolDefinitionFingerprint,
-                    $"{entry.Family}.expectedHardenedToolDefinitionFingerprint");
+                    entry.ExpectedCurrentToolDefinitionFingerprint,
+                    $"{entry.Family}.expectedCurrentToolDefinitionFingerprint");
             }
-            else if (entry.ExpectedPriorToolDefinitionFingerprint is not null
-                || entry.ExpectedHardenedToolDefinitionFingerprint is not null)
+            else if (entry.ExpectedControlToolDefinitionFingerprint is not null
+                || entry.ExpectedCurrentToolDefinitionFingerprint is not null)
             {
                 throw new InvalidDataException(
                     $"Excluded family '{entry.Family}' must not freeze model-visible tool definitions.");
@@ -321,53 +350,58 @@ internal static class OperationalMcpProtocolLoader
         if (protocol.Projections.Count != eligible.Count
             || protocol.Projections.Any(projection =>
                 !eligible.Contains(projection.Family)
-                || string.IsNullOrWhiteSpace(projection.PriorVersion)
-                || string.IsNullOrWhiteSpace(projection.HardenedVersion)
-                || string.IsNullOrWhiteSpace(projection.PriorSourceCommit)
-                || string.IsNullOrWhiteSpace(projection.HardenedSourceCommit)
-                || projection.ResponseReplacements.Count == 0
-                || projection.ToolDefinitionReplacements.Count == 0))
+                || string.IsNullOrWhiteSpace(projection.ControlVersion)
+                || string.IsNullOrWhiteSpace(projection.CurrentVersion)
+                || string.IsNullOrWhiteSpace(projection.ControlSource)
+                || string.IsNullOrWhiteSpace(projection.CurrentSourceCommit)
+                || projection.ResponseMutations.Count == 0
+                || projection.ToolDefinitionMutations.Count == 0))
         {
             throw new InvalidDataException(
-                "Each eligible family must have one deterministic wording projection.");
+                "Each eligible family must have one deterministic control projection.");
         }
 
         foreach (var projection in protocol.Projections)
         {
             RequireFingerprint(
-                projection.ExpectedPriorFingerprint,
-                $"{projection.Family}.expectedPriorFingerprint");
+                projection.ExpectedControlFingerprint,
+                $"{projection.Family}.expectedControlFingerprint");
             RequireFingerprint(
-                projection.ExpectedHardenedFingerprint,
-                $"{projection.Family}.expectedHardenedFingerprint");
-            if (projection.ResponseReplacements
-                    .Concat(projection.ToolDefinitionReplacements)
+                projection.ExpectedCurrentFingerprint,
+                $"{projection.Family}.expectedCurrentFingerprint");
+            if (projection.ResponseMutations
+                    .Concat(projection.ToolDefinitionMutations)
                     .Any(value =>
                         string.IsNullOrWhiteSpace(value.JsonPointer)
-                        || string.Equals(
-                            value.PriorWording,
-                            value.HardenedWording,
-                            StringComparison.Ordinal)))
+                        || value.Operation is not ("remove" or "replace")
+                        || value.ExpectedKind is not ("string" or "object" or "array")
+                        || (value.Operation == "replace"
+                            && value.ControlValue is null)))
             {
                 throw new InvalidDataException(
-                    $"Wording projection '{projection.Family}' contains an invalid replacement.");
+                    $"Control projection '{projection.Family}' contains an invalid mutation.");
             }
 
+            var controlFingerprint =
+                OperationalMcpResponseProjector.ProjectionFingerprint(
+                    projection,
+                    OperationalMcpArm.NoStatisticalFields);
+            var currentFingerprint =
+                OperationalMcpResponseProjector.ProjectionFingerprint(
+                    projection,
+                    OperationalMcpArm.CurrentIndicator);
             if (!string.Equals(
-                    OperationalMcpResponseProjector.WordingFingerprint(
-                        projection,
-                        OperationalMcpArm.PriorWording),
-                    projection.ExpectedPriorFingerprint,
+                    controlFingerprint,
+                    projection.ExpectedControlFingerprint,
                     StringComparison.Ordinal)
                 || !string.Equals(
-                    OperationalMcpResponseProjector.WordingFingerprint(
-                        projection,
-                        OperationalMcpArm.HardenedWording),
-                    projection.ExpectedHardenedFingerprint,
+                    currentFingerprint,
+                    projection.ExpectedCurrentFingerprint,
                     StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
-                    $"Wording projection '{projection.Family}' fingerprint changed.");
+                    $"Control projection '{projection.Family}' fingerprint changed: "
+                    + $"control={controlFingerprint}, current={currentFingerprint}.");
             }
         }
 
@@ -416,10 +450,11 @@ internal static class OperationalMcpProtocolLoader
                     || protocol.Cases.Any(value =>
                         value.Id.Contains("1338", StringComparison.Ordinal)
                         || value.Id.Contains("v1", StringComparison.Ordinal)
-                        || value.Id.Contains("v2", StringComparison.Ordinal)))
+                        || value.Id.Contains("v2", StringComparison.Ordinal)
+                        || value.Id.Contains("v3", StringComparison.Ordinal)))
                 {
                     throw new InvalidDataException(
-                        "The v3 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
+                        "The v4 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
                 }
             }
 
@@ -460,7 +495,7 @@ internal static class OperationalMcpProtocolLoader
             || !developmentClasses.Contains(OperationalMcpCaseClass.HealthyControl))
         {
             throw new InvalidDataException(
-                "The v3 development partition must contain one positive and one healthy allocation case.");
+                "The v4 development partition must contain one positive and one healthy allocation case.");
         }
     }
 

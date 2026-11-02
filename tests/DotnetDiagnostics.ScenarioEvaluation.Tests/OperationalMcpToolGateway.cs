@@ -36,7 +36,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         IReadOnlyList<AgentToolDefinition> tools,
         string catalogFingerprint,
         string toolDefinitionFingerprint,
-        string wordingProjectionFingerprint)
+        string responseProjectionFingerprint)
     {
         _client = client;
         _budget = budget;
@@ -49,7 +49,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         Tools = tools;
         CatalogFingerprint = catalogFingerprint;
         ToolDefinitionFingerprint = toolDefinitionFingerprint;
-        WordingProjectionFingerprint = wordingProjectionFingerprint;
+        ResponseProjectionFingerprint = responseProjectionFingerprint;
     }
 
     public IReadOnlyList<AgentToolDefinition> Tools { get; }
@@ -60,7 +60,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
 
     public string ToolDefinitionFingerprint { get; }
 
-    public string WordingProjectionFingerprint { get; }
+    public string ResponseProjectionFingerprint { get; }
 
     public IReadOnlyList<OperationalMcpExchange> Exchanges => _exchanges;
 
@@ -131,15 +131,15 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 OperationalMcpProtocolLoader.Fingerprint(definitions);
             var inventory = protocol.Inventory.Single(entry => entry.Family == family);
             var expectedToolDefinitionFingerprint =
-                arm == OperationalMcpArm.PriorWording
-                    ? inventory.ExpectedPriorToolDefinitionFingerprint
-                    : inventory.ExpectedHardenedToolDefinitionFingerprint;
-            var wordingProjectionFingerprint =
-                OperationalMcpResponseProjector.WordingFingerprint(projection, arm);
-            var expectedWordingProjectionFingerprint =
-                arm == OperationalMcpArm.PriorWording
-                    ? projection.ExpectedPriorFingerprint
-                    : projection.ExpectedHardenedFingerprint;
+                arm == OperationalMcpArm.NoStatisticalFields
+                    ? inventory.ExpectedControlToolDefinitionFingerprint
+                    : inventory.ExpectedCurrentToolDefinitionFingerprint;
+            var responseProjectionFingerprint =
+                OperationalMcpResponseProjector.ProjectionFingerprint(projection, arm);
+            var expectedResponseProjectionFingerprint =
+                arm == OperationalMcpArm.NoStatisticalFields
+                    ? projection.ExpectedControlFingerprint
+                    : projection.ExpectedCurrentFingerprint;
             if (!string.Equals(
                     catalogFingerprint,
                     protocol.ExpectedCatalogFingerprint,
@@ -159,12 +159,12 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
             }
 
             if (!string.Equals(
-                    wordingProjectionFingerprint,
-                    expectedWordingProjectionFingerprint,
+                    responseProjectionFingerprint,
+                    expectedResponseProjectionFingerprint,
                     StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    $"The {arm} wording projection fingerprint changed: expected {expectedWordingProjectionFingerprint}, observed {wordingProjectionFingerprint}.");
+                    $"The {arm} response projection fingerprint changed: expected {expectedResponseProjectionFingerprint}, observed {responseProjectionFingerprint}.");
             }
 
             return new(
@@ -179,7 +179,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 definitions,
                 catalogFingerprint,
                 toolDefinitionFingerprint,
-                wordingProjectionFingerprint);
+                responseProjectionFingerprint);
         }
         catch
         {
