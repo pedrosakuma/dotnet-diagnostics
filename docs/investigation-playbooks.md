@@ -443,9 +443,9 @@ If `resources` looks clean, continue with GC-focused investigation.
 `collect_events(kind="gc")` for 15–30 s. If gen-2 collections happen but `gen-2-size`
 doesn't drop, you have surviving objects (leak or long-lived cache).
 
-### Step 3a — Live heap growth diff (retention-aware leak hunt)
-Once Step 3 confirms surviving objects, pin down **which types** are growing and **what's
-holding them** without two offline dumps + manual SOS `!objsize` / `!gcroot`. Take two live
+### Step 3a — Live heap growth observation (retention-aware)
+Once Step 3 confirms surviving objects, observe **which types** grew and **what held them**
+without two offline dumps + manual SOS `!objsize` / `!gcroot`. Take two live
 heap snapshots N seconds apart (30–120 s under steady load), then diff them:
 
 ```text
@@ -457,12 +457,16 @@ query_snapshot(handle=H2, view="growth", baselineHandle=H1)                 # ra
 
 `view="growth"` ranks the types whose retained `bytes` (or `instances`, via `rankBy`) grew
 between the two captures, attaching the retention chains from the *later* snapshot to the top
-growers — so the verdict `leak_suspected` comes with the static cache / event-handler / collection
-that is keeping each growing type alive. It ranks by **absolute** growth (not percentage), so a
-large-but-modest-% leak does not get buried under noisy small types. Pass `includeRetentionPaths=true`
+growers. It ranks by **absolute** growth (not percentage), so a large-but-modest-% increase does
+not get buried under noisy small types. Pass `includeRetentionPaths=true`
 on both captures to populate the "what's holding them" drill-down (the view notes it and suggests a
-re-capture otherwise). This is the fastest path from "memory keeps growing" to a named leaking type
-plus its root.
+re-capture otherwise).
+
+Treat the result as a pairwise observation, not a diagnosis: it does not establish workload
+equivalence, a leak, health, regression, causality, operational importance, or future trajectory.
+The v2 MCP projection has no verdict. Use the ranked deltas and roots to select the next code or
+workload check, then reproduce under a controlled scenario before concluding that retention is
+defective.
 
 ### Step 4
 If `working-set` keeps climbing but the managed heap still looks deceptively small,

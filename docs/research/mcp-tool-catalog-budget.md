@@ -144,6 +144,21 @@ limitations) at **8,203 bytes**. These are result-contract and per-response
 costs, not `tools/list` costs. The 17/13 tool counts remain unchanged, and
 retained growth requires no increase beyond the current **287,000-byte** ceiling.
 
+### MCP pairwise heap-growth observation (2026-11-02, #1352)
+
+The executable HTTP budget test measures **286,596 bytes** for the maximal
+17-tool catalog and **253,428 bytes** for the default 13-tool subset. The
+MCP heap-growth observation catalog delta is **0 bytes** because the versioned
+`dotnet-diagnostics/mcp-heap-growth-observation/v2` projection remains inside
+the existing unconstrained `query_snapshot.data` envelope and adds no tool.
+
+The verdict-free projection schema is **5,822 bytes**, and a representative
+payload with baseline/current heap totals, one per-type byte/instance delta,
+quality, notes, identity, and one bounded retention path is **1,894 bytes**.
+These are per-result schema/payload costs, not `tools/list` additions. The
+projection deliberately omits both the legacy Core `Verdict` member and the
+Core/CLI-only objective retained-growth evidence block.
+
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
 The real HTTP test measures the current shipping catalog at **286,596 bytes**
