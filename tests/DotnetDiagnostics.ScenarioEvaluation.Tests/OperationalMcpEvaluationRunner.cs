@@ -165,7 +165,7 @@ internal static class OperationalMcpEvaluationRunner
             conclusions,
             [
                 "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, universal product claim, or automatic product-adoption verdict.",
-                "Protocol 5 factorizes the current post-#1342 allocation measurement-quality block into six deterministic arms; it does not reinterpret the preserved #1340, #1344, or #1346 experiments.",
+                "Protocol 6 isolates the current post-#1342 allocation measurement-quality fields under one shared neutral guard package; it does not reinterpret preserved protocols 1 through 5.",
                 "The diagnosing and assessing phases use different frozen models and isolated contexts; that does not eliminate shared-provider or training-data bias.",
                 "Fresh processes and captures reduce dependence but do not eliminate platform, scheduler, JIT, EventPipe, symbol, or workload variability.",
                 "Sample recognition cannot be ruled out because repository-owned workload symbols may appear in MCP evidence.",

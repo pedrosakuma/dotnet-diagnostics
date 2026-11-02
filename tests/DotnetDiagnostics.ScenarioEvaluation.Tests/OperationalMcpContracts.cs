@@ -152,17 +152,38 @@ public sealed record OperationalProjectionMutation(
     IReadOnlyList<OperationalMcpArm> Arms,
     IReadOnlyDictionary<OperationalMcpArm, JsonElement>? Values);
 
+public sealed record OperationalGuardMutation(
+    string JsonPointer,
+    string ExpectedKind,
+    JsonElement CurrentValue,
+    JsonElement Value);
+
+public sealed record OperationalMcpGuardPackage(
+    string CurrentSummary,
+    IReadOnlyList<string> CurrentAssumptions,
+    IReadOnlyList<string> CurrentLimitations,
+    string Summary,
+    IReadOnlyList<string> Assumptions,
+    IReadOnlyList<string> Limitations,
+    IReadOnlyList<OperationalGuardMutation> ToolDefinitionMutations)
+{
+    public string ExpectedFingerprint { get; init; } = string.Empty;
+}
+
 public sealed record OperationalMcpProjection(
     OperationalMcpFamily Family,
     string Schema,
     IReadOnlyDictionary<OperationalMcpArm, string> Versions,
     IReadOnlyDictionary<OperationalMcpArm, string> Sources,
     string CurrentSourceCommit,
-    IReadOnlyList<OperationalProjectionMutation> ResponseMutations,
-    IReadOnlyList<OperationalProjectionMutation> ToolDefinitionMutations)
+    OperationalMcpGuardPackage GuardPackage,
+    IReadOnlyList<string> CandidateResponsePointers,
+    IReadOnlyList<OperationalProjectionMutation> ResponseMutations)
 {
     public IReadOnlyDictionary<OperationalMcpArm, string> ExpectedFingerprints { get; init; } =
         new Dictionary<OperationalMcpArm, string>();
+
+    public string ExpectedMutationFingerprint { get; init; } = string.Empty;
 }
 
 public sealed record OperationalMcpDecisionRule(
