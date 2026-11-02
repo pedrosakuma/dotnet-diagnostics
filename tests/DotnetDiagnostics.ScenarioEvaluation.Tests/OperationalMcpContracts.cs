@@ -33,8 +33,8 @@ public enum OperationalMcpEligibility
 [JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpArm>))]
 public enum OperationalMcpArm
 {
-    Control,
-    Indicator,
+    PriorWording,
+    HardenedWording,
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpCaseClass>))]
@@ -70,6 +70,20 @@ public enum OperationalPilotConclusion
     Go,
     NoGo,
     Inconclusive,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<OperationalUnsupportedCertaintyCategory>))]
+public enum OperationalUnsupportedCertaintyCategory
+{
+    Dominance,
+    Exactness,
+    WorkloadEquivalence,
+    Causality,
+    Severity,
+    Regression,
+    Health,
+    OptimizationPriority,
+    MissingAsZero,
 }
 
 public sealed record OperationalMcpBudget(
@@ -124,14 +138,28 @@ public sealed record OperationalMcpInventoryEntry(
     string View,
     string Schema,
     string Reason,
-    string? ExpectedToolDefinitionFingerprint);
+    string? ExpectedPriorToolDefinitionFingerprint,
+    string? ExpectedHardenedToolDefinitionFingerprint);
+
+public sealed record OperationalWordingReplacement(
+    string JsonPointer,
+    string? PriorWording,
+    string HardenedWording);
 
 public sealed record OperationalMcpProjection(
     OperationalMcpFamily Family,
-    string Version,
     string Schema,
-    string NeutralSummary,
-    IReadOnlyList<string> JsonPointers);
+    string PriorVersion,
+    string HardenedVersion,
+    string PriorSourceCommit,
+    string HardenedSourceCommit,
+    IReadOnlyList<OperationalWordingReplacement> ResponseReplacements,
+    IReadOnlyList<OperationalWordingReplacement> ToolDefinitionReplacements)
+{
+    public string ExpectedPriorFingerprint { get; init; } = "unavailable";
+
+    public string ExpectedHardenedFingerprint { get; init; } = "unavailable";
+}
 
 public sealed record OperationalMcpCase(
     string Id,
@@ -203,6 +231,11 @@ public sealed record OperationalClaimAssessment(
     OperationalClaimSupport Support,
     string Rationale);
 
+public sealed record OperationalUnsupportedCertaintyFinding(
+    int ClaimIndex,
+    OperationalUnsupportedCertaintyCategory Category,
+    string Rationale);
+
 public sealed record OperationalAutomatedAssessment(
     string AssessorProvider,
     string AssessorModel,
@@ -213,7 +246,7 @@ public sealed record OperationalAutomatedAssessment(
     IReadOnlyList<OperationalClaimAssessment> Claims,
     OperationalUncertaintyQuality Uncertainty,
     string UncertaintyRationale,
-    int UnsupportedCertaintyCount,
+    IReadOnlyList<OperationalUnsupportedCertaintyFinding> UnsupportedCertaintyFindings,
     IReadOnlyList<string> UsefulNextSteps,
     IReadOnlyList<string> UnhelpfulNextSteps,
     int UnauthorizedActionAttempts,
@@ -223,6 +256,8 @@ public sealed record OperationalAutomatedAssessment(
     public int TransportOutputBytes { get; init; }
 
     public string? RawResponseSha256 { get; init; }
+
+    public int UnsupportedCertaintyCount => UnsupportedCertaintyFindings.Count;
 }
 
 public sealed record OperationalMcpPreflightReport(
@@ -240,6 +275,8 @@ public sealed record OperationalMcpRunReport(
     string ProtocolFingerprint,
     string InventoryFingerprint,
     string ProjectionFingerprint,
+    string PriorWordingFingerprint,
+    string HardenedWordingFingerprint,
     string CatalogFingerprint,
     string ToolDefinitionFingerprint,
     string CaseId,
@@ -261,15 +298,15 @@ public sealed record OperationalMcpRunReport(
 
 public sealed record OperationalDimensionDelta(
     string Dimension,
-    string Control,
-    string Indicator,
+    string PriorWording,
+    string HardenedWording,
     string Interpretation);
 
 public sealed record OperationalFamilyConclusion(
     OperationalMcpFamily Family,
     OperationalPilotConclusion Conclusion,
-    int ControlAttempts,
-    int IndicatorAttempts,
+    int PriorWordingAttempts,
+    int HardenedWordingAttempts,
     IReadOnlyList<OperationalDimensionDelta> Dimensions,
     IReadOnlyList<string> Limitations);
 
@@ -278,6 +315,8 @@ public sealed record OperationalMcpPilotReport(
     string ProtocolFingerprint,
     string InventoryFingerprint,
     string ProjectionFingerprint,
+    string PriorWordingFingerprint,
+    string HardenedWordingFingerprint,
     string ProductFingerprint,
     string ModelProvider,
     string Model,

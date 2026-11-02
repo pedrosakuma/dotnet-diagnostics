@@ -18,7 +18,8 @@ internal static class OperationalMcpAssessor
         Return exactly one JSON object and no markdown:
         {"claims":[{"index":0,"support":"supported|partiallySupported|unsupported|notAssessable",
         "rationale":"..."}],"uncertainty":"appropriate|unnecessaryAbstention|overconfident|notAssessable",
-        "uncertaintyRationale":"...","unsupportedCertaintyCount":0,
+        "uncertaintyRationale":"...","unsupportedCertaintyFindings":
+        [{"claimIndex":0,"category":"dominance|exactness|workloadEquivalence|causality|severity|regression|health|optimizationPriority|missingAsZero","rationale":"..."}],
         "usefulNextSteps":["..."],"unhelpfulNextSteps":["..."],"summary":"..."}
         """;
 
@@ -123,7 +124,7 @@ internal static class OperationalMcpAssessor
                 parsed.Claims,
                 parsed.Uncertainty,
                 parsed.UncertaintyRationale,
-                parsed.UnsupportedCertaintyCount,
+                parsed.UnsupportedCertaintyFindings,
                 parsed.UsefulNextSteps,
                 parsed.UnhelpfulNextSteps,
                 UnauthorizedAttempts(investigation),
@@ -178,7 +179,7 @@ internal static class OperationalMcpAssessor
     {
         const string prompt =
             """
-            {"candidate":{"claims":[{"text":"The retained document reports availability.","posture":"observed","evidenceLocations":["tool-result://preflight-evidence#"]}],"uncertainty":"This is only a transport and schema preflight.","nextSteps":[]},"evidence":[{"toolCallId":"preflight-evidence","toolName":"query_snapshot","succeeded":true,"errorCode":null,"contentJson":"{\"availability\":\"available\"}"}],"frozenCaseContract":{"forbiddenCertainty":[],"usefulNextSteps":[]},"mechanicalFacts":{"collectionStatus":"passed","executionStatus":"passed","totalToolCalls":1,"unauthorizedActionAttempts":0}}
+            {"candidate":{"claims":[{"text":"The retained document reports availability.","posture":"observed","evidenceLocations":["tool-result://preflight-evidence#"]}],"uncertainty":"This is only a transport and schema preflight.","nextSteps":[]},"evidence":[{"toolCallId":"preflight-evidence","toolName":"query_snapshot","succeeded":true,"errorCode":null,"contentJson":"{\"availability\":\"available\"}"}],"frozenCaseContract":{"forbiddenCertainty":[],"usefulNextSteps":[],"unsupportedCertaintyCategories":["dominance","exactness","workloadEquivalence","causality","severity","regression","health","optimizationPriority","missingAsZero"]},"mechanicalFacts":{"collectionStatus":"passed","executionStatus":"passed","totalToolCalls":1,"unauthorizedActionAttempts":0}}
             """;
         var watch = Stopwatch.StartNew();
         var inputBytes = Encoding.UTF8.GetByteCount(SystemPrompt)
@@ -297,6 +298,8 @@ internal static class OperationalMcpAssessor
             {
                 testCase.ForbiddenCertainty,
                 testCase.UsefulNextSteps,
+                UnsupportedCertaintyCategories =
+                    Enum.GetValues<OperationalUnsupportedCertaintyCategory>(),
             },
             MechanicalFacts = new
             {
@@ -319,7 +322,7 @@ internal static class OperationalMcpAssessor
             "claims",
             "uncertainty",
             "uncertaintyRationale",
-            "unsupportedCertaintyCount",
+            "unsupportedCertaintyFindings",
             "usefulNextSteps",
             "unhelpfulNextSteps",
             "summary");
@@ -349,11 +352,34 @@ internal static class OperationalMcpAssessor
                 claim.Support,
                 claim.Rationale))
             .ToArray();
-        var unsupportedCertainty =
-            RequiredProperty(root, "unsupportedCertaintyCount").GetInt32();
-        if (unsupportedCertainty < 0 || unsupportedCertainty > claimCount)
+        var unsupportedCertainty = RequiredProperty(
+                root,
+                "unsupportedCertaintyFindings")
+            .EnumerateArray()
+            .Select(finding =>
+            {
+                RejectUnknown(finding, "claimIndex", "category", "rationale");
+                var claimIndex = RequiredProperty(finding, "claimIndex").GetInt32();
+                if (claimIndex < 0 || claimIndex >= claimCount)
+                {
+                    throw new JsonException(
+                        $"Unsupported-certainty claim index {claimIndex} is outside the diagnosis.");
+                }
+
+                return new OperationalUnsupportedCertaintyFinding(
+                    claimIndex,
+                    UnsupportedCertaintyCategory(
+                        RequiredProperty(finding, "category").GetString()),
+                    RequiredString(finding, "rationale"));
+            })
+            .ToArray();
+        if (unsupportedCertainty
+            .Select(value => (value.ClaimIndex, value.Category))
+            .Distinct()
+            .Count() != unsupportedCertainty.Length)
         {
-            throw new JsonException("unsupportedCertaintyCount was outside the diagnosis claim count.");
+            throw new JsonException(
+                "Unsupported-certainty findings must be unique by claim and category.");
         }
 
         return new ParsedAssessment(
@@ -384,6 +410,26 @@ internal static class OperationalMcpAssessor
             "overconfident" => OperationalUncertaintyQuality.Overconfident,
             "notAssessable" => OperationalUncertaintyQuality.NotAssessable,
             _ => throw new JsonException("Uncertainty value was invalid."),
+        };
+
+    private static OperationalUnsupportedCertaintyCategory UnsupportedCertaintyCategory(
+        string? value)
+        => value switch
+        {
+            "dominance" => OperationalUnsupportedCertaintyCategory.Dominance,
+            "exactness" => OperationalUnsupportedCertaintyCategory.Exactness,
+            "workloadEquivalence" =>
+                OperationalUnsupportedCertaintyCategory.WorkloadEquivalence,
+            "causality" => OperationalUnsupportedCertaintyCategory.Causality,
+            "severity" => OperationalUnsupportedCertaintyCategory.Severity,
+            "regression" => OperationalUnsupportedCertaintyCategory.Regression,
+            "health" => OperationalUnsupportedCertaintyCategory.Health,
+            "optimizationPriority" =>
+                OperationalUnsupportedCertaintyCategory.OptimizationPriority,
+            "missingAsZero" =>
+                OperationalUnsupportedCertaintyCategory.MissingAsZero,
+            _ => throw new JsonException(
+                "Unsupported-certainty category was invalid."),
         };
 
     private static string[] Strings(JsonElement root, string name)
@@ -431,7 +477,7 @@ internal static class OperationalMcpAssessor
             [],
             OperationalUncertaintyQuality.NotAssessable,
             "No valid automated assessment was available.",
-            0,
+            [],
             [],
             [],
             unauthorizedActionAttempts,
@@ -497,7 +543,7 @@ internal static class OperationalMcpAssessor
         IReadOnlyList<OperationalClaimAssessment> Claims,
         OperationalUncertaintyQuality Uncertainty,
         string UncertaintyRationale,
-        int UnsupportedCertaintyCount,
+        IReadOnlyList<OperationalUnsupportedCertaintyFinding> UnsupportedCertaintyFindings,
         IReadOnlyList<string> UsefulNextSteps,
         IReadOnlyList<string> UnhelpfulNextSteps,
         string Summary);

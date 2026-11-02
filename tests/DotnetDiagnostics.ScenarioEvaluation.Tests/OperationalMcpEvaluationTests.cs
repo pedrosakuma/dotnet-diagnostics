@@ -9,11 +9,11 @@ public sealed class OperationalMcpProtocolTests
     public void FrozenProtocol_DeclaresOnlyTruthfullyReachableMcpFamilies()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var preserved = OperationalMcpProtocolLoader.LoadPreservedV1();
+        OperationalMcpProtocolLoader.ValidatePreservedV1();
+        OperationalMcpProtocolLoader.ValidatePreservedV2();
 
-        protocol.SchemaVersion.Should().Be(2);
-        protocol.ProtocolVersion.Should().Be("2.0.0");
-        preserved.ProtocolVersion.Should().Be("1.4.0");
+        protocol.SchemaVersion.Should().Be(3);
+        protocol.ProtocolVersion.Should().Be("3.0.0");
         protocol.Models.Should().NotBeNull();
         protocol.Models!.DiagnosingPromptSha256.Should().Be(
             BlindedAgentHarness.SystemPromptSha256);
@@ -31,32 +31,31 @@ public sealed class OperationalMcpProtocolTests
                 new[]
                 {
                     OperationalMcpFamily.AllocationReproducibility,
-                    OperationalMcpFamily.CpuHotspotCaptureProfiles,
                 });
-        protocol.Inventory.Single(value =>
-                value.Family == OperationalMcpFamily.CpuHotspotMovementComparison)
-            .Eligibility.Should().Be(OperationalMcpEligibility.Excluded);
-        protocol.Inventory.Single(value =>
-                value.Family == OperationalMcpFamily.ContentionConcentration)
-            .Reason.Should().Contain("omits");
-        protocol.Inventory.Single(value =>
-                value.Family == OperationalMcpFamily.ThreadPoolBacklog)
-            .Reason.Should().Contain("truthfully populates");
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Development);
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Heldout);
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(
-            protocol.Cases.Single(value => value.Id == "v2-dev-allocation-primary"));
+            protocol.Cases.Single(value => value.Id == "v3-dev-allocation-positive"));
         manifest.ReportedSymptom.Should().Contain(
             "already executed exactly 3 fresh collect_sample(kind=\"allocation\") captures");
         manifest.ReportedSymptom.Should().Contain(
             "query_snapshot(view=\"allocation-reproducibility\") sequence");
         manifest.ReportedSymptom.Should().Contain("follow-up can add evidence");
-        manifest.ReportedSymptom.Should().NotContain("v2-dev-allocation-primary");
-        manifest.ReportedSymptom.Should().NotContain("control");
-        manifest.ReportedSymptom.Should().NotContain("indicator");
+        manifest.ReportedSymptom.Should().NotContain("v3-dev-allocation-positive");
+        manifest.ReportedSymptom.Should().NotContain("prior");
+        manifest.ReportedSymptom.Should().NotContain("hardened");
         manifest.ReportedSymptom.Should().NotContain("projection");
+        protocol.Cases.Where(value =>
+                value.Partition == OperationalMcpPartition.Development)
+            .Select(value => value.CaseClass)
+            .Should().BeEquivalentTo(
+                new[]
+                {
+                    OperationalMcpCaseClass.Positive,
+                    OperationalMcpCaseClass.HealthyControl,
+                });
         foreach (var family in protocol.Inventory
                      .Where(value => value.Eligibility == OperationalMcpEligibility.Eligible)
                      .Select(value => value.Family))
@@ -70,13 +69,13 @@ public sealed class OperationalMcpProtocolTests
 
         OperationalMcpProtocolLoader.ProtocolFingerprint(protocol)
             .Should().Be(
-                "df1db2c83d7d71967fa582153f49e88b0201017f3f4486602f2da49a2604c43d");
+                OperationalMcpProtocolLoader.FrozenProtocolFingerprint);
         OperationalMcpProtocolLoader.InventoryFingerprint(protocol)
             .Should().Be(
-                "5502f0bfd8617e77faf3315fe5e8087976f8667d08c353b01093c4be95463f67");
+                OperationalMcpProtocolLoader.FrozenInventoryFingerprint);
         OperationalMcpProtocolLoader.ProjectionFingerprint(protocol)
             .Should().Be(
-                "9ab6488c85a32d5fa89426411068866c6966832e41cfa899d2c348e8ced47696");
+                OperationalMcpProtocolLoader.FrozenProjectionFingerprint);
     }
 
     [Theory]
@@ -106,7 +105,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v2-dev-allocation-primary");
+            value.Id == "v3-dev-allocation-positive");
         var call = new AgentToolCall(
             "predeclared-query-1",
             "query_snapshot",
@@ -164,7 +163,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v2-dev-allocation-primary");
+            value.Id == "v3-dev-allocation-positive");
         var call = new AgentToolCall(
             "same-id",
             "query_snapshot",
@@ -246,7 +245,7 @@ public sealed class OperationalMcpProtocolTests
         var turn = new AgentModelTurn(
             "wire",
             """
-            {"claims":[{"index":0,"support":"supported","rationale":"The synthetic evidence exists."}],"uncertainty":"appropriate","uncertaintyRationale":"The response is limited to preflight.","unsupportedCertaintyCount":0,"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Schema preflight passed."}
+            {"claims":[{"index":0,"support":"supported","rationale":"The synthetic evidence exists."}],"uncertainty":"appropriate","uncertaintyRationale":"The response is limited to preflight.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Schema preflight passed."}
             """,
             [],
             new AgentModelUsage(null, null, null),
@@ -301,45 +300,65 @@ public sealed class OperationalMcpProtocolTests
 
         first.Should().Equal(second);
         first.Should().BeEquivalentTo(
-            new[] { OperationalMcpArm.Control, OperationalMcpArm.Indicator });
+            new[]
+            {
+                OperationalMcpArm.PriorWording,
+                OperationalMcpArm.HardenedWording,
+            });
     }
 
     [Fact]
-    public void Projection_RemovesOnlySuccessfulMatchingIndicatorData()
+    public void ResponseProjection_RestoresExactPriorWordingAndOnlyWordingDiffers()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var projection = protocol.Projections.Single(value =>
-            value.Family == OperationalMcpFamily.AllocationReproducibility);
+        var projection = protocol.Projections.Single();
         const string raw =
             """
-            {"summary":"available","hints":[{"tool":"query_snapshot"}],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","availability":"available"},"handle":"h-1"}
+            {"summary":"Analyzed 3 identity-compatible allocation captures using descriptive bounded independent type and stack top-6 stability; stability does not establish workload dominance or a performance verdict.","hints":[{"tool":"query_snapshot","reason":"unchanged"}],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","method":"bounded-top-k-jaccard-shared-key-spearman-v1","availability":"available","requestedCaptureCount":3,"availableCaptureCount":3,"independenceUnit":"capture","topK":6,"compatibility":{"status":"compatible"},"estimatedBytes":{"median":123.0},"assumptions":["Each input is one separately started and stopped allocation capture.","Identity-compatible captures reported the same runtime semantics, EventPipe allocation backend, requested duration and retained top-N bounds.","Any assertion that workload shape, request mix, intensity or execution conditions were equivalent is caller-supplied and was not verified by capture identity."],"limitations":["GCAllocationTick estimated bytes are runtime sampling weights, not exact allocation totals, retained bytes, object counts or CPU time.","Stable top-K membership or rank describes retained sampled inventories only; it does not prove that a type or call site dominates the workload.","Allocated types and allocation stack sites are independent ranked inventories; no type-to-stack relationship is inferred or serialized.","Capture-level medians and raw median absolute deviations are descriptive only. No confidence interval is computed over weighted allocation ticks.","Capture identity compatibility covers recorded runtime, backend and requested capture settings only; it does not verify equivalent request mix, workload intensity or execution conditions.","Reproducibility is descriptive only: no universal scenario threshold or causal, severity, regression, health, performance or optimization-priority verdict is produced.","Missing, partial, zero-weight, unavailable or empty attribution and bounded inventories do not mean zero allocation activity; they describe observation or attribution limits for that capture."]},"handle":"h-1","cancelled":false}
             """;
 
-        var control = OperationalMcpResponseProjector.Apply(
+        var prior = OperationalMcpResponseProjector.Apply(
             raw,
-            OperationalMcpArm.Control,
+            OperationalMcpArm.PriorWording,
             projection,
             out var projected,
             out var schema);
-        var indicator = OperationalMcpResponseProjector.Apply(
+        var hardened = OperationalMcpResponseProjector.Apply(
             raw,
-            OperationalMcpArm.Indicator,
+            OperationalMcpArm.HardenedWording,
             projection,
-            out var indicatorProjected,
+            out var hardenedProjected,
             out _);
 
         projected.Should().BeTrue();
         schema.Should().Be(projection.Schema);
-        indicatorProjected.Should().BeFalse();
-        indicator.Should().Be(raw);
-        using var document = JsonDocument.Parse(control);
-        document.RootElement.GetProperty("data").ValueKind.Should().Be(JsonValueKind.Null);
-        document.RootElement.GetProperty("handle").GetString().Should().Be("h-1");
-        document.RootElement.GetProperty("summary").GetString()
-            .Should().Be(projection.NeutralSummary);
-        document.RootElement.TryGetProperty("evaluationProjection", out _).Should().BeFalse();
-        control.Should().NotContain("control arm");
-        control.Should().NotContain("blinded");
+        hardenedProjected.Should().BeFalse();
+        hardened.Should().Be(raw);
+        using var priorDocument = JsonDocument.Parse(prior);
+        using var hardenedDocument = JsonDocument.Parse(hardened);
+        priorDocument.RootElement.GetProperty("summary").GetString()
+            .Should().Be(
+                "Analyzed 3 compatible allocation captures using bounded independent type and stack top-6 stability; no performance verdict was produced.");
+        priorDocument.RootElement.GetProperty("data").GetProperty("limitations")
+            .GetArrayLength().Should().Be(5);
+        priorDocument.RootElement.GetProperty("data").GetProperty("limitations")[0]
+            .GetString().Should().Contain("exact allocated bytes");
+        priorDocument.RootElement.GetProperty("data").GetProperty("assumptions")[2]
+            .GetString().Should().Be("The workload shape and offered work were stable across captures.");
+        priorDocument.RootElement.GetProperty("data").GetProperty("estimatedBytes")
+            .GetRawText().Should().Be(
+                hardenedDocument.RootElement.GetProperty("data")
+                    .GetProperty("estimatedBytes").GetRawText());
+        priorDocument.RootElement.GetProperty("data").GetProperty("compatibility")
+            .GetRawText().Should().Be(
+                hardenedDocument.RootElement.GetProperty("data")
+                    .GetProperty("compatibility").GetRawText());
+        priorDocument.RootElement.GetProperty("hints").GetRawText().Should().Be(
+            hardenedDocument.RootElement.GetProperty("hints").GetRawText());
+        priorDocument.RootElement.GetProperty("handle").GetString().Should().Be("h-1");
+        prior.Should().NotContain("priorWording");
+        prior.Should().NotContain("hardenedWording");
+        prior.Should().NotContain("projection");
     }
 
     [Fact]
@@ -352,7 +371,7 @@ public sealed class OperationalMcpProtocolTests
 
         OperationalMcpResponseProjector.Apply(
                 failure,
-                OperationalMcpArm.Control,
+                OperationalMcpArm.PriorWording,
                 projection,
                 out var projected,
                 out _)
@@ -361,38 +380,63 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public void Projection_NeutralizesBothEligibleSchemasWithoutArmLeakage()
+    public void Projection_PreservesNonAvailableResultsByteForByte()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        foreach (var projection in protocol.Projections)
-        {
-            var raw = JsonSerializer.Serialize(new
-            {
-                summary = "indicator-derived summary",
-                hints = new[] { new { tool = "query_snapshot" } },
-                error = (object?)null,
-                data = new { schema = projection.Schema, availability = "available" },
-                cancelled = false,
-            });
+        var projection = protocol.Projections[0];
+        const string insufficient =
+            """
+            {"summary":"Allocation reproducibility requires at least 3 identity-compatible available captures; 1 were available.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","availability":"insufficientCaptureCount","availableCaptureCount":1}}
+            """;
 
-            var control = OperationalMcpResponseProjector.Apply(
-                raw,
-                OperationalMcpArm.Control,
+        OperationalMcpResponseProjector.Apply(
+                insufficient,
+                OperationalMcpArm.PriorWording,
                 projection,
                 out var projected,
-                out _);
+                out _)
+            .Should().Be(insufficient);
+        projected.Should().BeFalse();
+    }
 
-            projected.Should().BeTrue();
-            control.Should().NotContain("control");
-            control.Should().NotContain("indicator");
-            control.Should().NotContain("blinded");
-            control.Should().NotContain("projection");
-            using var document = JsonDocument.Parse(control);
-            document.RootElement.GetProperty("summary").GetString()
-                .Should().Be(projection.NeutralSummary);
-            document.RootElement.GetProperty("data").ValueKind
-                .Should().Be(JsonValueKind.Null);
-        }
+    [Fact]
+    public void ToolProjection_RestoresExactPriorDescriptionsAndOnlyWordingDiffers()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var projection = protocol.Projections.Single();
+        var hardened = new[]
+        {
+            new AgentToolDefinition("collect_sample", "collect", new System.Text.Json.Nodes.JsonObject()),
+            new AgentToolDefinition(
+                "query_snapshot",
+                "query",
+                System.Text.Json.Nodes.JsonNode.Parse(
+                    """
+                    {"type":"object","properties":{"view":{"type":"string","description":"Kind-specific view; omit for default. Allocation-reproducibility is descriptive only; read data.limitations. Durable selectors add bounded records/composition children; historical views never reattach."},"topN":{"type":"integer","description":"Ranked entries: defaults 50 heap/thread/collection, 25 off-CPU/diff, 3 allocation-reproducibility (cap 16; descriptive ranks do not prove workload dominance). Inline caps: threads 8, locks 12, retention paths 10; full evidence stays behind the handle."},"comparisonHandles":{"type":"array","description":"Diff: ordered prior handles. Allocation-reproducibility: separately started allocation handles; matching capture identity does not verify request mix, intensity or execution conditions. Current handle is appended; excludes baselineHandle."}}}
+                    """)!.AsObject()),
+        };
+
+        var prior = OperationalMcpResponseProjector.ApplyToolDefinitions(
+            hardened,
+            OperationalMcpArm.PriorWording,
+            projection);
+        var unchanged = OperationalMcpResponseProjector.ApplyToolDefinitions(
+            hardened,
+            OperationalMcpArm.HardenedWording,
+            projection);
+
+        OperationalMcpProtocolLoader.Fingerprint(unchanged)
+            .Should().Be(OperationalMcpProtocolLoader.Fingerprint(hardened));
+        prior[0].Should().BeEquivalentTo(hardened[0]);
+        prior[1].Description.Should().Be(hardened[1].Description);
+        prior[1].Parameters["properties"]!["view"]!["description"]!.GetValue<string>()
+            .Should().Contain("see tool-reference.md");
+        prior[1].Parameters["properties"]!["topN"]!["description"]!.GetValue<string>()
+            .Should().Contain("Reproducibility cap 16");
+        prior[1].Parameters["properties"]!["comparisonHandles"]!["description"]!.GetValue<string>()
+            .Should().Contain("compatible allocation handles");
+        JsonSerializer.Serialize(prior).Should().NotContain("priorWording");
+        JsonSerializer.Serialize(prior).Should().NotContain("hardenedWording");
     }
 
     [Fact]
@@ -446,23 +490,23 @@ public sealed class OperationalMcpProtocolTests
                 heldoutEvidence: false,
                 allAssessable: true,
                 completeCaseInventory: true,
-                controlSupport: 0,
-                indicatorSupport: 1,
-                controlUnsupported: 0,
-                indicatorUnsupported: 0,
-                controlAppropriate: 0,
-                indicatorAppropriate: 4,
-                controlUseful: 0,
-                indicatorUseful: 4,
-                controlUnhelpful: 0,
-                indicatorUnhelpful: 0,
-                controlUnauthorized: 0,
-                indicatorUnauthorized: 0)
+                priorSupport: 0,
+                hardenedSupport: 1,
+                priorUnsupported: 0,
+                hardenedUnsupported: 0,
+                priorAppropriate: 0,
+                hardenedAppropriate: 4,
+                priorUseful: 0,
+                hardenedUseful: 4,
+                priorUnhelpful: 0,
+                hardenedUnhelpful: 0,
+                priorUnauthorized: 0,
+                hardenedUnauthorized: 0)
             .Should().Be(OperationalPilotConclusion.Inconclusive);
         OperationalMcpEvaluationRunner.SelectConclusion(
                 true, true, true,
                 0.4, 0.7,
-                1, 1,
+                2, 1,
                 2, 3,
                 2, 3,
                 1, 1,
@@ -711,7 +755,7 @@ public sealed class OperationalMcpLiveTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v2-dev-allocation-primary");
+            value.Id == "v3-dev-allocation-positive");
         var outputPath = Path.Combine(
             Path.GetTempPath(),
             "dotnet-diagnostics-predeclared-failure",
@@ -812,12 +856,15 @@ public sealed class OperationalMcpLiveTests
         }
     }
 
-    [Fact(Timeout = 120_000)]
+    [Theory(Timeout = 120_000)]
+    [InlineData(OperationalMcpArm.PriorWording)]
+    [InlineData(OperationalMcpArm.HardenedWording)]
     [Trait("Category", "ScenarioAgentHarnessLive")]
-    public async Task RealMcpGateway_CollectsAndQueriesAllocationReproducibility()
+    public async Task RealMcpGateway_CollectsAndQueriesAllocationReproducibility(
+        OperationalMcpArm arm)
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var testCase = protocol.Cases.Single(value => value.Id == "v2-dev-allocation-primary");
+        var testCase = protocol.Cases.Single(value => value.Id == "v3-dev-allocation-positive");
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(testCase);
         await using var target = await AgentScenarioTarget.StartAsync(
             manifest,
@@ -827,7 +874,7 @@ public sealed class OperationalMcpLiveTests
             protocol.Budgets.ToAgentBudget(),
             testCase.Family,
             testCase.RequiredCaptures,
-            OperationalMcpArm.Indicator,
+            arm,
             protocol,
             Path.Combine(Path.GetTempPath(), "dotnet-diagnostics-operational-mcp", Guid.NewGuid().ToString("n")),
             CancellationToken.None);
@@ -849,11 +896,20 @@ public sealed class OperationalMcpLiveTests
         gateway.RequiredEvidenceSequenceCompleted.Should().BeTrue();
         gateway.CatalogFingerprint.Should().Be(protocol.ExpectedCatalogFingerprint);
         gateway.ToolDefinitionFingerprint.Should().Be(
-            protocol.Inventory.Single(value =>
-                value.Family == testCase.Family).ExpectedToolDefinitionFingerprint);
+            arm == OperationalMcpArm.PriorWording
+                ? protocol.Inventory.Single(value =>
+                    value.Family == testCase.Family)
+                    .ExpectedPriorToolDefinitionFingerprint
+                : protocol.Inventory.Single(value =>
+                    value.Family == testCase.Family)
+                    .ExpectedHardenedToolDefinitionFingerprint);
+        gateway.WordingProjectionFingerprint.Should().Be(
+            arm == OperationalMcpArm.PriorWording
+                ? protocol.Projections.Single().ExpectedPriorFingerprint
+                : protocol.Projections.Single().ExpectedHardenedFingerprint);
         JsonSerializer.Serialize(gateway.Tools).Should().NotContain(testCase.Id);
-        JsonSerializer.Serialize(gateway.Tools).Should().NotContain("control");
-        JsonSerializer.Serialize(gateway.Tools).Should().NotContain("indicator");
+        JsonSerializer.Serialize(gateway.Tools).Should().NotContain("priorWording");
+        JsonSerializer.Serialize(gateway.Tools).Should().NotContain("hardenedWording");
         var (extraCapture, extraApproval) = await gateway.ExecuteAsync(
             new AgentToolCall(
                 "collect-extra",
@@ -886,24 +942,6 @@ public sealed class OperationalMcpLiveTests
         wrongTarget.ErrorCode.Should().Be("target_not_authorized");
         OperationalMcpAssessor.CountUnauthorizedAttempts([wrongTargetApproval]).Should().Be(1);
 
-        var cpuCase = protocol.Cases.Single(value => value.Id == "v2-dev-cpu-alpha");
-        await using var cpuGateway = await OperationalMcpToolGateway.StartAsync(
-            target.ProcessId,
-            protocol.Budgets.ToAgentBudget(),
-            cpuCase.Family,
-            cpuCase.RequiredCaptures,
-            OperationalMcpArm.Indicator,
-            protocol,
-            Path.Combine(
-                Path.GetTempPath(),
-                "dotnet-diagnostics-operational-mcp",
-                Guid.NewGuid().ToString("n")),
-            CancellationToken.None);
-        cpuGateway.ToolDefinitionFingerprint.Should().HaveLength(64);
-        cpuGateway.CatalogFingerprint.Should().Be(protocol.ExpectedCatalogFingerprint);
-        cpuGateway.ToolDefinitionFingerprint.Should().Be(
-            protocol.Inventory.Single(value =>
-                value.Family == cpuCase.Family).ExpectedToolDefinitionFingerprint);
     }
 
     private sealed class PreflightThenCancellingTransport(
@@ -922,7 +960,7 @@ public sealed class OperationalMcpLiveTests
                 return Task.FromResult(new AgentModelTurn(
                     "preflight",
                     """
-                    {"claims":[{"index":0,"support":"supported","rationale":"Synthetic evidence exists."}],"uncertainty":"appropriate","uncertaintyRationale":"Preflight only.","unsupportedCertaintyCount":0,"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Passed."}
+                    {"claims":[{"index":0,"support":"supported","rationale":"Synthetic evidence exists."}],"uncertainty":"appropriate","uncertaintyRationale":"Preflight only.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Passed."}
                     """,
                     [],
                     new AgentModelUsage(null, null, null),
@@ -1022,6 +1060,6 @@ public sealed class OperationalMcpPilotTests
             value.McpExchanges.All(exchange =>
                 !string.IsNullOrWhiteSpace(exchange.RawResponseJson)
                 && !string.IsNullOrWhiteSpace(exchange.ModelVisibleResponseJson)));
-        report.FamilyConclusions.Should().HaveCount(2);
+        report.FamilyConclusions.Should().ContainSingle();
     }
 }
