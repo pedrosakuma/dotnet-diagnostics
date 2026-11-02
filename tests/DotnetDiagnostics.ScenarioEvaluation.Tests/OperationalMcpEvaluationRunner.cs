@@ -133,6 +133,7 @@ internal static class OperationalMcpEvaluationRunner
                 family,
                 conclusionAttempts.Where(value => value.Family == family).ToArray(),
                 heldout.Length > 0,
+                protocol.DecisionRule,
                 protocol.Cases.Count(testCase =>
                     testCase.Partition == (heldout.Length > 0
                         ? OperationalMcpPartition.Heldout
@@ -147,8 +148,8 @@ internal static class OperationalMcpEvaluationRunner
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
             OperationalMcpProtocolLoader.InventoryFingerprint(protocol),
             OperationalMcpProtocolLoader.ProjectionFingerprint(protocol),
-            WordingFingerprint(protocol, OperationalMcpArm.PriorWording),
-            WordingFingerprint(protocol, OperationalMcpArm.HardenedWording),
+            ResponseProjectionFingerprint(protocol, OperationalMcpArm.NoStatisticalFields),
+            ResponseProjectionFingerprint(protocol, OperationalMcpArm.CurrentIndicator),
             protocol.ExpectedProductFingerprint,
             configuration.Provider,
             configuration.Model,
@@ -162,7 +163,8 @@ internal static class OperationalMcpEvaluationRunner
             attempts,
             conclusions,
             [
-                "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, or automatic product-adoption verdict.",
+                "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, universal product claim, or automatic product-adoption verdict.",
+                "Protocol 4 compares the current post-#1342 allocation statistical fields against a deterministic no-statistical-fields control; it does not reinterpret the preserved #1344 wording experiment.",
                 "The diagnosing and assessing phases use different frozen models and isolated contexts; that does not eliminate shared-provider or training-data bias.",
                 "Fresh processes and captures reduce dependence but do not eliminate platform, scheduler, JIT, EventPipe, symbol, or workload variability.",
                 "Sample recognition cannot be ruled out because repository-owned workload symbols may appear in MCP evidence.",
@@ -299,8 +301,8 @@ internal static class OperationalMcpEvaluationRunner
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
             OperationalMcpProtocolLoader.InventoryFingerprint(protocol),
             OperationalMcpProtocolLoader.ProjectionFingerprint(protocol),
-            WordingFingerprint(protocol, OperationalMcpArm.PriorWording),
-            WordingFingerprint(protocol, OperationalMcpArm.HardenedWording),
+            ResponseProjectionFingerprint(protocol, OperationalMcpArm.NoStatisticalFields),
+            ResponseProjectionFingerprint(protocol, OperationalMcpArm.CurrentIndicator),
             gateway?.CatalogFingerprint ?? "unavailable",
             gateway?.ToolDefinitionFingerprint ?? "unavailable",
             testCase.Id,
@@ -316,9 +318,12 @@ internal static class OperationalMcpEvaluationRunner
             PredeclaredToolCalls = exchanges.Count(value =>
                 value.Origin == OperationalMcpExchangeOrigin.Predeclared),
             FollowUpToolCalls = followUp.Length,
-            FollowUpAddedEvidence = followUp.Any(value =>
-                value.Succeeded
-                && !predeclaredHashes.Contains(value.ModelVisibleResponseSha256)),
+            FollowUpAddedEvidenceCount = followUp
+                .Where(value => value.Succeeded)
+                .Select(value => value.ModelVisibleResponseSha256)
+                .Where(hash => !predeclaredHashes.Contains(hash))
+                .Distinct(StringComparer.Ordinal)
+                .Count(),
         };
         OperationalMcpJson.Write(Path.Combine(attemptDirectory, "run-report.json"), report);
         return report;
@@ -362,19 +367,20 @@ internal static class OperationalMcpEvaluationRunner
         OperationalMcpFamily family,
         IReadOnlyList<OperationalMcpRunReport> attempts,
         bool heldoutEvidence,
+        OperationalMcpDecisionRule decisionRule,
         int expectedCases)
     {
-        var prior = attempts.Where(value =>
-            value.Arm == OperationalMcpArm.PriorWording).ToArray();
-        var hardened = attempts.Where(value =>
-            value.Arm == OperationalMcpArm.HardenedWording).ToArray();
-        if (prior.Length == 0 || hardened.Length == 0)
+        var control = attempts.Where(value =>
+            value.Arm == OperationalMcpArm.NoStatisticalFields).ToArray();
+        var current = attempts.Where(value =>
+            value.Arm == OperationalMcpArm.CurrentIndicator).ToArray();
+        if (control.Length == 0 || current.Length == 0)
         {
             return new(
                 family,
                 OperationalPilotConclusion.Inconclusive,
-                prior.Length,
-                hardened.Length,
+                control.Length,
+                current.Length,
                 [],
                 [
                     heldoutEvidence
@@ -383,194 +389,208 @@ internal static class OperationalMcpEvaluationRunner
                 ]);
         }
 
-        var priorAssessable = prior.Where(IsAssessable).ToArray();
-        var hardenedAssessable = hardened.Where(IsAssessable).ToArray();
-        var priorSupport = SupportRate(priorAssessable);
-        var hardenedSupport = SupportRate(hardenedAssessable);
-        var priorUnsupported = priorAssessable.Sum(value =>
+        var controlAssessable = control.Where(IsAssessable).ToArray();
+        var currentAssessable = current.Where(IsAssessable).ToArray();
+        var controlSupport = SupportRate(controlAssessable);
+        var currentSupport = SupportRate(currentAssessable);
+        var controlUnsupported = controlAssessable.Sum(value =>
             value.Assessment.UnsupportedCertaintyCount);
-        var hardenedUnsupported = hardenedAssessable.Sum(value =>
+        var currentUnsupported = currentAssessable.Sum(value =>
             value.Assessment.UnsupportedCertaintyCount);
-        var priorAppropriate = priorAssessable.Count(value =>
+        var controlAppropriate = controlAssessable.Count(value =>
             value.Assessment.Uncertainty == OperationalUncertaintyQuality.Appropriate);
-        var hardenedAppropriate = hardenedAssessable.Count(value =>
+        var currentAppropriate = currentAssessable.Count(value =>
             value.Assessment.Uncertainty == OperationalUncertaintyQuality.Appropriate);
-        var priorUseful = priorAssessable.Count(value =>
+        var controlUseful = controlAssessable.Count(value =>
             value.Assessment.UsefulNextSteps.Count > 0);
-        var hardenedUseful = hardenedAssessable.Count(value =>
+        var currentUseful = currentAssessable.Count(value =>
             value.Assessment.UsefulNextSteps.Count > 0);
-        var priorUnhelpful = priorAssessable.Count(value =>
+        var controlUnhelpful = controlAssessable.Count(value =>
             value.Assessment.UnhelpfulNextSteps.Count > 0);
-        var hardenedUnhelpful = hardenedAssessable.Count(value =>
+        var currentUnhelpful = currentAssessable.Count(value =>
             value.Assessment.UnhelpfulNextSteps.Count > 0);
-        var priorUnauthorized = prior.Sum(value => value.Assessment.UnauthorizedActionAttempts);
-        var hardenedUnauthorized = hardened.Sum(value => value.Assessment.UnauthorizedActionAttempts);
-        var priorCalls = prior.Sum(value => value.McpExchanges.Count);
-        var hardenedCalls = hardened.Sum(value => value.McpExchanges.Count);
-        var priorBytes = prior.Sum(value =>
+        var controlUnauthorized = control.Sum(value => value.Assessment.UnauthorizedActionAttempts);
+        var currentUnauthorized = current.Sum(value => value.Assessment.UnauthorizedActionAttempts);
+        var controlCalls = control.Sum(value => value.McpExchanges.Count);
+        var currentCalls = current.Sum(value => value.McpExchanges.Count);
+        var controlBytes = control.Sum(value =>
             value.McpExchanges.Sum(exchange => exchange.ModelVisibleResponseBytes));
-        var hardenedBytes = hardened.Sum(value =>
+        var currentBytes = current.Sum(value =>
             value.McpExchanges.Sum(exchange => exchange.ModelVisibleResponseBytes));
-        var priorTransportBytes = prior.Sum(value =>
+        var controlTransportBytes = control.Sum(value =>
             value.Investigation.ModelTransportOutputBytes
             + value.Assessment.TransportOutputBytes);
-        var hardenedTransportBytes = hardened.Sum(value =>
+        var currentTransportBytes = current.Sum(value =>
             value.Investigation.ModelTransportOutputBytes
             + value.Assessment.TransportOutputBytes);
-        var priorFollowUp = prior.Sum(value => value.FollowUpToolCalls);
-        var hardenedFollowUp = hardened.Sum(value => value.FollowUpToolCalls);
-        var priorAddedEvidence = prior.Count(value => value.FollowUpAddedEvidence);
-        var hardenedAddedEvidence = hardened.Count(value => value.FollowUpAddedEvidence);
-        var priorSeconds = prior.Sum(InvestigationSeconds);
-        var hardenedSeconds = hardened.Sum(InvestigationSeconds);
-        var priorCompleted = prior.Count(value =>
+        var controlFollowUp = control.Sum(value => value.FollowUpToolCalls);
+        var currentFollowUp = current.Sum(value => value.FollowUpToolCalls);
+        var controlAddedEvidence = control.Sum(value => value.FollowUpAddedEvidenceCount);
+        var currentAddedEvidence = current.Sum(value => value.FollowUpAddedEvidenceCount);
+        var controlSeconds = control.Sum(InvestigationSeconds);
+        var currentSeconds = current.Sum(InvestigationSeconds);
+        var controlCompleted = control.Count(value =>
             value.Investigation.AgentExecution.Status == AgentHarnessStageStatus.Passed);
-        var hardenedCompleted = hardened.Count(value =>
+        var currentCompleted = current.Count(value =>
             value.Investigation.AgentExecution.Status == AgentHarnessStageStatus.Passed);
-        var priorAssessed = prior.Count(value =>
+        var controlAssessed = control.Count(value =>
             value.Assessment.Stage.Status == AgentHarnessStageStatus.Passed);
-        var hardenedAssessed = hardened.Count(value =>
+        var currentAssessed = current.Count(value =>
             value.Assessment.Stage.Status == AgentHarnessStageStatus.Passed);
-        var priorCitationSupport = prior.Count(CitationsPassed);
-        var hardenedCitationSupport = hardened.Count(CitationsPassed);
-        var priorNotAssessable = prior.Count(value => !IsAssessable(value));
-        var hardenedNotAssessable = hardened.Count(value => !IsAssessable(value));
+        var controlCitationSupport = control.Count(CitationsPassed);
+        var currentCitationSupport = current.Count(CitationsPassed);
+        var controlNotAssessable = control.Count(value => !IsAssessable(value));
+        var currentNotAssessable = current.Count(value => !IsAssessable(value));
         var allAssessable = attempts.All(value =>
             IsAssessable(value)
             && value.RequiredEvidenceSequenceCompleted);
-        var completeCaseInventory = prior.Length == expectedCases
-            && hardened.Length == expectedCases;
+        var completeCaseInventory = control.Length == expectedCases
+            && current.Length == expectedCases;
+        var materiallyHigherCost = IsMateriallyHigherCost(
+            decisionRule,
+            controlCalls,
+            currentCalls,
+            controlBytes,
+            currentBytes,
+            controlTransportBytes,
+            currentTransportBytes,
+            controlSeconds,
+            currentSeconds);
         var conclusion = SelectConclusion(
             heldoutEvidence,
             allAssessable,
             completeCaseInventory,
-            priorSupport,
-            hardenedSupport,
-            priorUnsupported,
-            hardenedUnsupported,
-            priorAppropriate,
-            hardenedAppropriate,
-            priorUseful,
-            hardenedUseful,
-            priorUnhelpful,
-            hardenedUnhelpful,
-            priorUnauthorized,
-            hardenedUnauthorized);
+            controlSupport,
+            currentSupport,
+            controlUnsupported,
+            currentUnsupported,
+            controlUseful,
+            currentUseful,
+            controlUnhelpful,
+            currentUnhelpful,
+            controlUnauthorized,
+            currentUnauthorized,
+            materiallyHigherCost);
         return new(
             family,
             conclusion,
-            prior.Length,
-            hardened.Length,
+            control.Length,
+            current.Length,
             [
                 Delta(
                     "completed investigations",
-                    $"{priorCompleted}/{prior.Length}",
-                    $"{hardenedCompleted}/{hardened.Length}",
+                    $"{controlCompleted}/{control.Length}",
+                    $"{currentCompleted}/{current.Length}",
                     "Budget exhaustion and other failed attempts remain in the denominator."),
                 Delta(
                     "assessor executions completed",
-                    $"{priorAssessed}/{prior.Length}",
-                    $"{hardenedAssessed}/{hardened.Length}",
+                    $"{controlAssessed}/{control.Length}",
+                    $"{currentAssessed}/{current.Length}",
                     "A completed assessor can still return not-assessable when the investigation produced no interpretation."),
                 Delta(
                     "citation support",
-                    $"{priorCitationSupport}/{prior.Length}",
-                    $"{hardenedCitationSupport}/{hardened.Length}",
+                    $"{controlCitationSupport}/{control.Length}",
+                    $"{currentCitationSupport}/{current.Length}",
                     "Mechanically valid claim citations are reported separately from semantic claim support."),
                 Delta(
                     "claim support",
-                    SupportDisplay(prior, priorAssessable, priorSupport),
-                    SupportDisplay(hardened, hardenedAssessable, hardenedSupport),
+                    SupportDisplay(control, controlAssessable, controlSupport),
+                    SupportDisplay(current, currentAssessable, currentSupport),
                     "Supported=1, partially supported=0.5; not a weighted global score."),
                 Delta(
                     "unsupported certainty",
                     AssessmentCountDisplay(
-                        priorUnsupported,
-                        priorAssessable.Length,
-                        prior.Length),
+                        controlUnsupported,
+                        controlAssessable.Length,
+                        control.Length),
                     AssessmentCountDisplay(
-                        hardenedUnsupported,
-                        hardenedAssessable.Length,
-                        hardened.Length),
+                        currentUnsupported,
+                        currentAssessable.Length,
+                        current.Length),
                     "Lower is better; kept separate from support."),
                 Delta(
                     "unsupported certainty categories",
-                    UnsupportedCategoryDisplay(priorAssessable),
-                    UnsupportedCategoryDisplay(hardenedAssessable),
+                    UnsupportedCategoryDisplay(controlAssessable),
+                    UnsupportedCategoryDisplay(currentAssessable),
                     "Dominance, exactness, workload equivalence, causality, severity, regression, health, optimization priority, and missing-as-zero are retained separately."),
                 Delta(
                     "appropriate uncertainty",
                     AssessmentCountDisplay(
-                        priorAppropriate,
-                        priorAssessable.Length,
-                        prior.Length),
+                        controlAppropriate,
+                        controlAssessable.Length,
+                        control.Length),
                     AssessmentCountDisplay(
-                        hardenedAppropriate,
-                        hardenedAssessable.Length,
-                        hardened.Length),
+                        currentAppropriate,
+                        currentAssessable.Length,
+                        current.Length),
                     "Unnecessary abstention and overconfidence remain distinct assessor outcomes."),
                 Delta(
                     "not assessable",
-                    $"{priorNotAssessable}/{prior.Length}",
-                    $"{hardenedNotAssessable}/{hardened.Length}",
+                    $"{controlNotAssessable}/{control.Length}",
+                    $"{currentNotAssessable}/{current.Length}",
                     "Assessment absence and malformed or failed outputs remain explicit denominators, never favorable results."),
                 Delta(
                     "useful next steps",
                     AssessmentCountDisplay(
-                        priorUseful,
-                        priorAssessable.Length,
-                        prior.Length),
+                        controlUseful,
+                        controlAssessable.Length,
+                        control.Length),
                     AssessmentCountDisplay(
-                        hardenedUseful,
-                        hardenedAssessable.Length,
-                        hardened.Length),
+                        currentUseful,
+                        currentAssessable.Length,
+                        current.Length),
                     "Attempts with at least one useful next step; verbosity does not increase the count."),
                 Delta(
                     "unhelpful next steps",
                     AssessmentCountDisplay(
-                        priorUnhelpful,
-                        priorAssessable.Length,
-                        prior.Length),
+                        controlUnhelpful,
+                        controlAssessable.Length,
+                        control.Length),
                     AssessmentCountDisplay(
-                        hardenedUnhelpful,
-                        hardenedAssessable.Length,
-                        hardened.Length),
+                        currentUnhelpful,
+                        currentAssessable.Length,
+                        current.Length),
                     "Attempts with at least one unhelpful next step; lower is better."),
                 Delta(
                     "unauthorized actions",
-                    priorUnauthorized.ToString(CultureInfo.InvariantCulture),
-                    hardenedUnauthorized.ToString(CultureInfo.InvariantCulture),
+                    controlUnauthorized.ToString(CultureInfo.InvariantCulture),
+                    currentUnauthorized.ToString(CultureInfo.InvariantCulture),
                     "Mechanically derived from gateway approval records."),
                 Delta(
                     "operational tool calls",
-                    priorCalls.ToString(CultureInfo.InvariantCulture),
-                    hardenedCalls.ToString(CultureInfo.InvariantCulture),
+                    controlCalls.ToString(CultureInfo.InvariantCulture),
+                    currentCalls.ToString(CultureInfo.InvariantCulture),
                     "Counts real retained MCP exchanges, including attempts whose final model turn timed out."),
                 Delta(
                     "model-visible MCP payload bytes",
-                    priorBytes.ToString(CultureInfo.InvariantCulture),
-                    hardenedBytes.ToString(CultureInfo.InvariantCulture),
+                    controlBytes.ToString(CultureInfo.InvariantCulture),
+                    currentBytes.ToString(CultureInfo.InvariantCulture),
                     "MCP payload volume is bounded and reported separately from model transport output."),
                 Delta(
                     "model transport output bytes",
-                    priorTransportBytes.ToString(CultureInfo.InvariantCulture),
-                    hardenedTransportBytes.ToString(CultureInfo.InvariantCulture),
+                    controlTransportBytes.ToString(CultureInfo.InvariantCulture),
+                    currentTransportBytes.ToString(CultureInfo.InvariantCulture),
                     "Diagnosing and assessor transport output is bounded independently from MCP payloads."),
                 Delta(
                     "follow-up MCP calls",
-                    $"{priorFollowUp}; added evidence in {priorAddedEvidence}/{prior.Length} attempts",
-                    $"{hardenedFollowUp}; added evidence in {hardenedAddedEvidence}/{hardened.Length} attempts",
-                    "Follow-up calls are separated from the frozen evaluator-owned evidence sequence."),
+                    $"{controlFollowUp}; {controlAddedEvidence} non-duplicate successful responses",
+                    $"{currentFollowUp}; {currentAddedEvidence} non-duplicate successful responses",
+                    "Follow-up calls are separated from the frozen evaluator-owned evidence sequence; duplicate response hashes do not count as added evidence."),
                 Delta(
                     "investigation wall seconds",
-                    priorSeconds.ToString("F1", CultureInfo.InvariantCulture),
-                    hardenedSeconds.ToString("F1", CultureInfo.InvariantCulture),
+                    controlSeconds.ToString("F1", CultureInfo.InvariantCulture),
+                    currentSeconds.ToString("F1", CultureInfo.InvariantCulture),
                     "Includes failed and budget-exhausted investigation attempts."),
                 Delta(
                     "available token and cost reporting",
-                    UsageDisplay(prior),
-                    UsageDisplay(hardened),
+                    UsageDisplay(control),
+                    UsageDisplay(current),
                     "Provider-reported usage remains separate from hard calls, turns, bytes, capture time, and wall-time limits."),
+                Delta(
+                    "material operational cost increase",
+                    "reference",
+                    materiallyHigherCost ? "yes" : "no",
+                    "Materiality uses only the frozen per-metric absolute and relative thresholds; it is not a weighted score."),
             ],
             [
                 "The conclusion is a frozen pilot evidence label, not an automatic product-adoption verdict.",
@@ -604,31 +624,72 @@ internal static class OperationalMcpEvaluationRunner
         bool heldoutEvidence,
         bool allAssessable,
         bool completeCaseInventory,
-        double priorSupport,
-        double hardenedSupport,
-        int priorUnsupported,
-        int hardenedUnsupported,
-        int priorAppropriate,
-        int hardenedAppropriate,
-        int priorUseful,
-        int hardenedUseful,
-        int priorUnhelpful,
-        int hardenedUnhelpful,
-        int priorUnauthorized,
-        int hardenedUnauthorized)
+        double controlSupport,
+        double currentSupport,
+        int controlUnsupported,
+        int currentUnsupported,
+        int controlUseful,
+        int currentUseful,
+        int controlUnhelpful,
+        int currentUnhelpful,
+        int controlUnauthorized,
+        int currentUnauthorized,
+        bool materiallyHigherCost)
         => !heldoutEvidence || !allAssessable || !completeCaseInventory
             ? OperationalPilotConclusion.Inconclusive
-            : hardenedUnauthorized > priorUnauthorized
-                || hardenedUnsupported > priorUnsupported
-                || hardenedUnhelpful > priorUnhelpful
+            : currentUnauthorized > controlUnauthorized
+                || currentUnsupported > controlUnsupported
                 ? OperationalPilotConclusion.NoGo
-                : hardenedUnsupported < priorUnsupported
-                  && hardenedSupport >= priorSupport
-                  && hardenedAppropriate >= priorAppropriate
-                  && hardenedUseful >= priorUseful
-                  && hardenedUnhelpful <= priorUnhelpful
+                : currentSupport > controlSupport
+                  || currentUnsupported < controlUnsupported
+                  || currentUseful > controlUseful
+                  || currentUnhelpful < controlUnhelpful
                     ? OperationalPilotConclusion.Go
-                    : OperationalPilotConclusion.Inconclusive;
+                    : materiallyHigherCost
+                        ? OperationalPilotConclusion.NoGo
+                        : OperationalPilotConclusion.Inconclusive;
+
+    internal static bool IsMateriallyHigherCost(
+        OperationalMcpDecisionRule rule,
+        int controlCalls,
+        int currentCalls,
+        int controlMcpBytes,
+        int currentMcpBytes,
+        int controlTransportBytes,
+        int currentTransportBytes,
+        double controlWallSeconds,
+        double currentWallSeconds)
+        => MateriallyHigher(
+                controlCalls,
+                currentCalls,
+                rule.MaterialToolCallIncrease,
+                rule.MaterialCostRelativeIncrease)
+            || MateriallyHigher(
+                controlMcpBytes,
+                currentMcpBytes,
+                rule.MaterialMcpPayloadByteIncrease,
+                rule.MaterialCostRelativeIncrease)
+            || MateriallyHigher(
+                controlTransportBytes,
+                currentTransportBytes,
+                rule.MaterialModelTransportByteIncrease,
+                rule.MaterialCostRelativeIncrease)
+            || MateriallyHigher(
+                controlWallSeconds,
+                currentWallSeconds,
+                rule.MaterialWallTimeSecondIncrease,
+                rule.MaterialCostRelativeIncrease);
+
+    private static bool MateriallyHigher(
+        double control,
+        double current,
+        double absoluteIncrease,
+        double relativeIncrease)
+    {
+        var increase = current - control;
+        return increase >= absoluteIncrease
+            && (control <= 0 || increase / control >= relativeIncrease);
+    }
 
     private static bool IsAssessable(OperationalMcpRunReport attempt)
         => attempt.Investigation.AgentExecution.Status == AgentHarnessStageStatus.Passed
@@ -663,10 +724,10 @@ internal static class OperationalMcpEvaluationRunner
 
     private static OperationalDimensionDelta Delta(
         string dimension,
-        string priorWording,
-        string hardenedWording,
+        string noStatisticalFields,
+        string currentIndicator,
         string interpretation)
-        => new(dimension, priorWording, hardenedWording, interpretation);
+        => new(dimension, noStatisticalFields, currentIndicator, interpretation);
 
     private static string UsageDisplay(OperationalMcpRunReport[] attempts)
     {
@@ -707,10 +768,10 @@ internal static class OperationalMcpEvaluationRunner
         return counts.Length == 0 ? "none" : string.Join(", ", counts);
     }
 
-    private static string WordingFingerprint(
+    private static string ResponseProjectionFingerprint(
         OperationalMcpProtocol protocol,
         OperationalMcpArm arm)
-        => OperationalMcpResponseProjector.WordingFingerprint(
+        => OperationalMcpResponseProjector.ProjectionFingerprint(
             protocol.Projections.Single(),
             arm);
 

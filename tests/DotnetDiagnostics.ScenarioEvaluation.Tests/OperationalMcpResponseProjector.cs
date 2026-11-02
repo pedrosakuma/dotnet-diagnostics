@@ -32,10 +32,10 @@ internal static class OperationalMcpResponseProjector
             return raw;
         }
 
-        ApplyReplacements(root, arm, projection.ResponseReplacements);
-        didProject = arm == OperationalMcpArm.PriorWording;
+        ApplyMutations(root, arm, projection.ResponseMutations);
+        didProject = arm == OperationalMcpArm.NoStatisticalFields;
         projectedSchema = schema;
-        return arm == OperationalMcpArm.HardenedWording
+        return arm == OperationalMcpArm.CurrentIndicator
             ? raw
             : root.ToJsonString();
     }
@@ -49,87 +49,120 @@ internal static class OperationalMcpResponseProjector
             hardenedDefinitions,
             OperationalMcpJson.Options)?.AsArray()
             ?? throw new JsonException("The model-visible tool definitions were invalid.");
-        ApplyReplacements(root, arm, projection.ToolDefinitionReplacements);
+        ApplyMutations(root, arm, projection.ToolDefinitionMutations);
         return root.Deserialize<IReadOnlyList<AgentToolDefinition>>(OperationalMcpJson.Options)
             ?? throw new JsonException("The projected model-visible tool definitions were empty.");
     }
 
-    public static string WordingFingerprint(
+    public static string ProjectionFingerprint(
         OperationalMcpProjection projection,
         OperationalMcpArm arm)
         => OperationalMcpProtocolLoader.Fingerprint(new
         {
             projection.Family,
             projection.Schema,
-            Version = arm == OperationalMcpArm.PriorWording
-                ? projection.PriorVersion
-                : projection.HardenedVersion,
-            SourceCommit = arm == OperationalMcpArm.PriorWording
-                ? projection.PriorSourceCommit
-                : projection.HardenedSourceCommit,
-            Response = projection.ResponseReplacements.Select(value => new
+            Version = arm == OperationalMcpArm.NoStatisticalFields
+                ? projection.ControlVersion
+                : projection.CurrentVersion,
+            Source = arm == OperationalMcpArm.NoStatisticalFields
+                ? projection.ControlSource
+                : projection.CurrentSourceCommit,
+            Response = projection.ResponseMutations.Select(value => new
             {
                 value.JsonPointer,
-                Wording = arm == OperationalMcpArm.PriorWording
-                    ? value.PriorWording
-                    : value.HardenedWording,
+                value.Operation,
+                value.ExpectedKind,
+                Value = arm == OperationalMcpArm.NoStatisticalFields
+                    ? value.ControlValue
+                    : value.CurrentValue,
             }),
-            Tools = projection.ToolDefinitionReplacements.Select(value => new
+            Tools = projection.ToolDefinitionMutations.Select(value => new
             {
                 value.JsonPointer,
-                Wording = arm == OperationalMcpArm.PriorWording
-                    ? value.PriorWording
-                    : value.HardenedWording,
+                value.Operation,
+                value.ExpectedKind,
+                Value = arm == OperationalMcpArm.NoStatisticalFields
+                    ? value.ControlValue
+                    : value.CurrentValue,
             }),
         });
 
-    private static void ApplyReplacements(
+    private static void ApplyMutations(
         JsonNode root,
         OperationalMcpArm arm,
-        IReadOnlyList<OperationalWordingReplacement> replacements)
+        IReadOnlyList<OperationalProjectionMutation> mutations)
     {
-        foreach (var replacement in replacements)
+        foreach (var mutation in mutations)
         {
-            var expected = Expand(root, replacement.HardenedWording);
-            var projected = arm == OperationalMcpArm.PriorWording
-                ? replacement.PriorWording is null
-                    ? null
-                    : Expand(root, replacement.PriorWording)
-                : expected;
-            var node = Resolve(root, replacement.JsonPointer);
-            if (node is not JsonValue value
-                || !value.TryGetValue<string>(out var actual)
-                || !string.Equals(actual, expected, StringComparison.Ordinal))
+            var actual = Resolve(root, mutation.JsonPointer);
+            var expected = mutation.CurrentValue is { } currentValue
+                ? Expand(root, currentValue)
+                : null;
+            if (actual is null
+                || (expected is not null && !JsonNode.DeepEquals(actual, expected))
+                || !MatchesKind(actual, mutation.ExpectedKind))
             {
                 throw new InvalidDataException(
-                    $"The hardened wording at '{replacement.JsonPointer}' changed.");
+                    $"The current response value at '{mutation.JsonPointer}' changed: "
+                    + $"expected={expected?.ToJsonString() ?? mutation.ExpectedKind}, "
+                    + $"actual={actual?.ToJsonString() ?? "missing"}.");
             }
 
-            if (projected is null)
+            if (arm == OperationalMcpArm.CurrentIndicator)
             {
-                Remove(root, replacement.JsonPointer);
+                continue;
+            }
+
+            if (string.Equals(mutation.Operation, "remove", StringComparison.Ordinal))
+            {
+                Remove(root, mutation.JsonPointer);
+            }
+            else if (string.Equals(mutation.Operation, "replace", StringComparison.Ordinal)
+                && mutation.ControlValue is { } controlValue)
+            {
+                Replace(root, mutation.JsonPointer, Expand(root, controlValue));
             }
             else
             {
-                Replace(root, replacement.JsonPointer, projected);
+                throw new InvalidDataException(
+                    $"Projection mutation '{mutation.JsonPointer}' has an invalid operation.");
             }
         }
     }
 
-    private static string Expand(JsonNode root, string value)
-        => value
-            .Replace(
-                "{availableCaptureCount}",
-                Resolve(root, "/data/availableCaptureCount")?.GetValue<int>()
-                    .ToString(System.Globalization.CultureInfo.InvariantCulture)
-                ?? "{availableCaptureCount}",
-                StringComparison.Ordinal)
-            .Replace(
-                "{topK}",
-                Resolve(root, "/data/topK")?.GetValue<int>()
-                    .ToString(System.Globalization.CultureInfo.InvariantCulture)
-                ?? "{topK}",
-                StringComparison.Ordinal);
+    private static bool MatchesKind(JsonNode value, string expectedKind)
+        => expectedKind switch
+        {
+            "string" => value is JsonValue jsonValue
+                && jsonValue.TryGetValue<string>(out _),
+            "object" => value is JsonObject,
+            "array" => value is JsonArray,
+            _ => false,
+        };
+
+    private static JsonNode? Expand(JsonNode root, JsonElement value)
+    {
+        var node = JsonNode.Parse(value.GetRawText());
+        if (node is JsonValue jsonValue
+            && jsonValue.TryGetValue<string>(out var text))
+        {
+            return JsonValue.Create(
+                text.Replace(
+                        "{availableCaptureCount}",
+                        Resolve(root, "/data/availableCaptureCount")?.GetValue<int>()
+                            .ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        ?? "{availableCaptureCount}",
+                        StringComparison.Ordinal)
+                    .Replace(
+                        "{topK}",
+                        Resolve(root, "/data/topK")?.GetValue<int>()
+                            .ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        ?? "{topK}",
+                        StringComparison.Ordinal));
+        }
+
+        return node;
+    }
 
     private static JsonNode? Resolve(JsonNode root, string pointer)
     {
@@ -153,7 +186,7 @@ internal static class OperationalMcpResponseProjector
         return current;
     }
 
-    private static void Replace(JsonNode root, string pointer, string value)
+    private static void Replace(JsonNode root, string pointer, JsonNode? value)
     {
         var segments = Segments(pointer).ToArray();
         if (segments.Length == 0)
@@ -167,7 +200,7 @@ internal static class OperationalMcpResponseProjector
         switch (parent)
         {
             case JsonObject jsonObject:
-                jsonObject[last] = value;
+                jsonObject[last] = value?.DeepClone();
                 break;
             case JsonArray jsonArray when int.TryParse(
                 last,
@@ -176,7 +209,7 @@ internal static class OperationalMcpResponseProjector
                 out var index)
                 && index >= 0
                 && index < jsonArray.Count:
-                jsonArray[index] = value;
+                jsonArray[index] = value?.DeepClone();
                 break;
             default:
                 throw new InvalidDataException(

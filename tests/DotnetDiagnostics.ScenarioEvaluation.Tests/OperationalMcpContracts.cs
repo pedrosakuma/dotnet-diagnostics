@@ -33,8 +33,8 @@ public enum OperationalMcpEligibility
 [JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpArm>))]
 public enum OperationalMcpArm
 {
-    PriorWording,
-    HardenedWording,
+    NoStatisticalFields,
+    CurrentIndicator,
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpCaseClass>))]
@@ -138,28 +138,37 @@ public sealed record OperationalMcpInventoryEntry(
     string View,
     string Schema,
     string Reason,
-    string? ExpectedPriorToolDefinitionFingerprint,
-    string? ExpectedHardenedToolDefinitionFingerprint);
+    string? ExpectedControlToolDefinitionFingerprint,
+    string? ExpectedCurrentToolDefinitionFingerprint);
 
-public sealed record OperationalWordingReplacement(
+public sealed record OperationalProjectionMutation(
     string JsonPointer,
-    string? PriorWording,
-    string HardenedWording);
+    string Operation,
+    string ExpectedKind,
+    JsonElement? ControlValue,
+    JsonElement? CurrentValue);
 
 public sealed record OperationalMcpProjection(
     OperationalMcpFamily Family,
     string Schema,
-    string PriorVersion,
-    string HardenedVersion,
-    string PriorSourceCommit,
-    string HardenedSourceCommit,
-    IReadOnlyList<OperationalWordingReplacement> ResponseReplacements,
-    IReadOnlyList<OperationalWordingReplacement> ToolDefinitionReplacements)
+    string ControlVersion,
+    string CurrentVersion,
+    string ControlSource,
+    string CurrentSourceCommit,
+    IReadOnlyList<OperationalProjectionMutation> ResponseMutations,
+    IReadOnlyList<OperationalProjectionMutation> ToolDefinitionMutations)
 {
-    public string ExpectedPriorFingerprint { get; init; } = "unavailable";
+    public string ExpectedControlFingerprint { get; init; } = "unavailable";
 
-    public string ExpectedHardenedFingerprint { get; init; } = "unavailable";
+    public string ExpectedCurrentFingerprint { get; init; } = "unavailable";
 }
+
+public sealed record OperationalMcpDecisionRule(
+    double MaterialCostRelativeIncrease,
+    int MaterialMcpPayloadByteIncrease,
+    int MaterialModelTransportByteIncrease,
+    double MaterialWallTimeSecondIncrease,
+    int MaterialToolCallIncrease);
 
 public sealed record OperationalMcpCase(
     string Id,
@@ -191,6 +200,7 @@ public sealed record OperationalMcpProtocol(
     string FailurePolicy,
     string ExpectedCatalogFingerprint,
     OperationalMcpBudget Budgets,
+    OperationalMcpDecisionRule DecisionRule,
     IReadOnlyList<OperationalMcpInventoryEntry> Inventory,
     IReadOnlyList<OperationalMcpProjection> Projections,
     IReadOnlyList<OperationalMcpCase> Cases)
@@ -275,8 +285,8 @@ public sealed record OperationalMcpRunReport(
     string ProtocolFingerprint,
     string InventoryFingerprint,
     string ProjectionFingerprint,
-    string PriorWordingFingerprint,
-    string HardenedWordingFingerprint,
+    string ControlProjectionFingerprint,
+    string CurrentProjectionFingerprint,
     string CatalogFingerprint,
     string ToolDefinitionFingerprint,
     string CaseId,
@@ -293,20 +303,20 @@ public sealed record OperationalMcpRunReport(
 
     public int FollowUpToolCalls { get; init; }
 
-    public bool FollowUpAddedEvidence { get; init; }
+    public int FollowUpAddedEvidenceCount { get; init; }
 }
 
 public sealed record OperationalDimensionDelta(
     string Dimension,
-    string PriorWording,
-    string HardenedWording,
+    string NoStatisticalFields,
+    string CurrentIndicator,
     string Interpretation);
 
 public sealed record OperationalFamilyConclusion(
     OperationalMcpFamily Family,
     OperationalPilotConclusion Conclusion,
-    int PriorWordingAttempts,
-    int HardenedWordingAttempts,
+    int NoStatisticalFieldsAttempts,
+    int CurrentIndicatorAttempts,
     IReadOnlyList<OperationalDimensionDelta> Dimensions,
     IReadOnlyList<string> Limitations);
 
@@ -315,8 +325,8 @@ public sealed record OperationalMcpPilotReport(
     string ProtocolFingerprint,
     string InventoryFingerprint,
     string ProjectionFingerprint,
-    string PriorWordingFingerprint,
-    string HardenedWordingFingerprint,
+    string ControlProjectionFingerprint,
+    string CurrentProjectionFingerprint,
     string ProductFingerprint,
     string ModelProvider,
     string Model,
