@@ -24,6 +24,9 @@ namespace DotnetDiagnostics.Mcp.IntegrationTests;
 [Collection(DiagnosticIntegrationGroup.Name)]
 public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTests.FullCatalogFactory>
 {
+    private const int PreThreadPoolQuantityMaximalCatalogBytes = 286_596;
+    private const int PreThreadPoolQuantityDefaultCatalogBytes = 253_428;
+
     // Baseline after the Phase 16 proxy-delegation/scope-authorization batch was
     // 220,804 bytes. Issue #773 deliberately adds one static resolved-risk summary
     // per tool, conditional-safety flags, compact result fields, and the reserved
@@ -65,7 +68,12 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     // reproducibility interpretation limits catalog-visible. The maximal/default
     // catalogs are 286,596/253,428 bytes (+144 each), preserving 17/13 tools and
     // 404 bytes of maximal-catalog headroom under the unchanged ceiling.
-    private const int MaximumCatalogBytes = 287_000;
+    // Issue #1353: versioned ThreadPool queue/worker quantity metadata makes
+    // items versus threads and items/s versus threads/s explicit. The
+    // maximal/default catalogs are 287,613/254,445 bytes (+1,017 each);
+    // 289,000 preserves the additive typed contract with 1,387 bytes of
+    // maximal headroom and adds no tool.
+    private const int MaximumCatalogBytes = 289_000;
 
     private readonly FullCatalogFactory _factory;
     private readonly ITestOutputHelper _output;
@@ -275,15 +283,44 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
         var unavailablePayloadBytes = JsonSerializer.SerializeToUtf8Bytes(
             unavailable,
             McpJsonUtilities.DefaultOptions).Length;
+        var availableJson = JsonSerializer.SerializeToNode(
+            available,
+            McpJsonUtilities.DefaultOptions)!.AsObject();
+        availableJson.Remove("quantityMetadataAvailability");
+        availableJson.Remove("quantities");
+        var legacyPayloadBytes = SerializedLength(availableJson);
+        var legacy = availableJson.Deserialize<ThreadPoolBacklogEvidence>(
+            McpJsonUtilities.DefaultOptions);
+        var maximalCatalogDelta =
+            current.SerializedBytes - PreThreadPoolQuantityMaximalCatalogBytes;
+        var defaultCatalogDelta =
+            current.DefaultCatalogBytes - PreThreadPoolQuantityDefaultCatalogBytes;
+        var remainingHeadroom = MaximumCatalogBytes - current.SerializedBytes;
 
         _output.WriteLine($"ThreadPool backlog evidence schema: {schemaBytes:N0} bytes");
         _output.WriteLine($"ThreadPool backlog available payload: {availablePayloadBytes:N0} bytes");
         _output.WriteLine($"ThreadPool backlog unavailable payload: {unavailablePayloadBytes:N0} bytes");
+        _output.WriteLine($"ThreadPool backlog legacy payload: {legacyPayloadBytes:N0} bytes");
+        _output.WriteLine(
+            $"ThreadPool quantity maximal catalog delta: +{maximalCatalogDelta:N0} bytes");
+        _output.WriteLine(
+            $"ThreadPool quantity default catalog delta: +{defaultCatalogDelta:N0} bytes");
+        _output.WriteLine(
+            $"ThreadPool quantity maximal catalog headroom: {remainingHeadroom:N0} bytes");
 
         current.Tools.Should().HaveCount(17);
-        schemaBytes.Should().BeLessThanOrEqualTo(4_096);
+        schemaBytes.Should().BeLessThanOrEqualTo(8_192);
         availablePayloadBytes.Should().BeLessThanOrEqualTo(4_096);
         unavailablePayloadBytes.Should().BeLessThanOrEqualTo(4_096);
+        legacyPayloadBytes.Should().BeLessThanOrEqualTo(4_096);
+        legacy.Should().NotBeNull();
+        legacy!.QuantityMetadataAvailability.Should()
+            .Be(ThreadPoolBacklogQuantityMetadataAvailability.LegacyUnavailable);
+        legacy.Quantities.Should().BeNull(
+            "legacy artifacts must not acquire units from current defaults");
+        available.Quantities!.QueueLength.SlopeUnit.Should().Be("items/s");
+        available.Quantities.WorkerCount.SlopeUnit.Should().Be("threads/s");
+        unavailable.Quantities.Should().Be(ThreadPoolBacklogQuantityMetadata.Current);
 
         var budgetReport = File.ReadAllText(Path.Combine(
             FindRepoRoot(),
@@ -297,6 +334,10 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
                      schemaBytes,
                      availablePayloadBytes,
                      unavailablePayloadBytes,
+                     legacyPayloadBytes,
+                     maximalCatalogDelta,
+                     defaultCatalogDelta,
+                     remainingHeadroom,
                  })
         {
             budgetReport.Should().Contain(

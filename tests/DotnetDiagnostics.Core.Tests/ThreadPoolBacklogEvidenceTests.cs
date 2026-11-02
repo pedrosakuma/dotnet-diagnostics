@@ -24,6 +24,20 @@ public sealed class ThreadPoolBacklogEvidenceTests
         result.DrainedAtTail.Should().BeFalse();
         result.QueueMovement.Should().Be(new ThreadPoolBacklogMovement(10, 20, 10, 15, 2));
         result.WorkerMovement.Should().Be(new ThreadPoolBacklogMovement(4, 9, 5, 6.5, 1));
+        result.QuantityMetadataAvailability.Should()
+            .Be(ThreadPoolBacklogQuantityMetadataAvailability.Available);
+        result.Quantities.Should().Be(ThreadPoolBacklogQuantityMetadata.Current);
+        result.Quantities!.QueueLength.Should().Be(new ThreadPoolBacklogQuantityDescriptor(
+            "System.Runtime/threadpool-queue-length",
+            "items",
+            "window-mean",
+            "none",
+            "items/s",
+            "median-pairwise-slope",
+            "elapsed-seconds"));
+        result.Quantities.QueueLength.SlopeUnit.Should().Be("items/s");
+        result.Quantities.WorkerCount.Unit.Should().Be("threads");
+        result.Quantities.WorkerCount.SlopeUnit.Should().Be("threads/s");
         result.Reason.State.Should().Be(ThreadPoolBacklogReasonState.Known);
         result.Reason.SameCapture.Should().BeTrue();
     }
@@ -132,6 +146,52 @@ public sealed class ThreadPoolBacklogEvidenceTests
         result.DrainedAtTail.Should().BeNull();
         result.QueueMovement.Should().BeNull();
         result.WorkerMovement.Should().BeNull();
+        result.QuantityMetadataAvailability.Should()
+            .Be(ThreadPoolBacklogQuantityMetadataAvailability.Available);
+        result.Quantities.Should().Be(ThreadPoolBacklogQuantityMetadata.Current);
+    }
+
+    [Fact]
+    public void LegacyJson_MissingQuantityMetadataRemainsExplicitlyUnavailable()
+    {
+        const string legacyJson =
+            """
+            {
+              "schema": "dotnet-diagnostics/threadpool-backlog-evidence/v1",
+              "captureId": "legacy-capture",
+              "protocol": { "queueLevel": 10, "minimumWindows": 4, "drainTailWindows": 2 },
+              "availability": "available",
+              "abstentionReasons": [],
+              "queueWindowCount": 4,
+              "workerWindowCount": 4,
+              "windowsAboveLevel": 4,
+              "proportionAboveLevel": 1,
+              "longestContiguousDurationAboveLevelSeconds": 4,
+              "drainedAtTail": false,
+              "queueMovement": { "first": 12, "last": 15, "delta": 3, "median": 13.5, "theilSenSlopePerSecond": 1 },
+              "workerMovement": { "first": 4, "last": 7, "delta": 3, "median": 5.5, "theilSenSlopePerSecond": 1 },
+              "collectorQueueP95Median": null,
+              "unavailableFields": [],
+              "reason": {
+                "state": "unknown",
+                "value": null,
+                "provenance": "missing",
+                "captureId": null,
+                "observedAt": null,
+                "sameCapture": false
+              }
+            }
+            """;
+
+        var result = JsonSerializer.Deserialize<ThreadPoolBacklogEvidence>(
+            legacyJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        result.Should().NotBeNull();
+        result!.QuantityMetadataAvailability.Should()
+            .Be(ThreadPoolBacklogQuantityMetadataAvailability.LegacyUnavailable);
+        result.Quantities.Should().BeNull();
+        result.QueueMovement!.TheilSenSlopePerSecond.Should().Be(1);
     }
 
     [Fact]

@@ -124,3 +124,12 @@ tool but does consume registered output-schema bytes. VS Code may consume the
 CLI JSONL field while leaving collection and calculation in Core/CLI.
 BenchmarkDotNet's separate ThreadPool runtime-adjustment-reason analysis is
 not this bounded backlog contract and must not be treated as equivalent.
+
+Issue #1353 adds a nested, versioned quantity block without changing the outer
+v1 evidence schema. Queue length is identified as
+`System.Runtime/threadpool-queue-length` in `items`; worker count is
+`System.Runtime/threadpool-thread-count` in `threads`. Both are window means
+without value normalization, while their Theil-Sen slopes explicitly use
+`items/s` and `threads/s`, median pairwise-slope aggregation and elapsed-second
+normalization. Missing metadata on an old artifact remains
+`legacy_unavailable`; consumers must not infer current units for legacy values.

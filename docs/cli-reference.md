@@ -1462,6 +1462,17 @@ one bounded, non-overlapping window. Available evidence reports:
 - runtime-reason known/unknown state with same-capture provenance;
 - collector p95 only when every retained queue window supplied one.
 
+Current records include
+`dotnet-diagnostics/threadpool-backlog-quantity-metadata/v1`. The queue-length
+descriptor uses the stable ID `System.Runtime/threadpool-queue-length`, unit
+`items`, `window-mean` aggregation and no normalization; its Theil-Sen slope is
+`items/s`, aggregated as a median pairwise slope over elapsed seconds. The
+worker-count descriptor uses `System.Runtime/threadpool-thread-count`,
+`threads`, and `threads/s` with the same aggregation rules. Human output prints
+those concrete units. A legacy record with no quantity block remains readable
+but reports `quantity-metadata=legacy_unavailable`; units are not inferred or
+backfilled.
+
 The collector retains at most 64 queue and 64 worker windows. Any retention truncation, irregular
 cadence, EventPipe/dispatch loss, processing failure, or insufficient queue/worker window count
 forces abstention: `availability` becomes `unsupported_approximation`, `loss_detected`, or

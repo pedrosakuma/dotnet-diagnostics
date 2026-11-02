@@ -465,17 +465,17 @@ scenario vertical slice (#1323) present:
 
 | Measurement | UTF-8 bytes |
 |---|---:|
-| Current maximal 17-tool catalog | 286,596 |
-| Current default 13-tool catalog | 253,428 |
+| Current maximal 17-tool catalog | 287,613 |
+| Current default 13-tool catalog | 254,445 |
 | Representative evidence JSON schema | 3,493 |
-| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 297,144 |
-| Prospective default catalog with the same three existing tools | 263,976 |
+| Prospective maximal catalog when the typed record is added to `collect_events`, `collect_sample`, and `compare_to_baseline` | 298,161 |
+| Prospective default catalog with the same three existing tools | 264,993 |
 | Catalog increase, maximal and default | 10,548 |
 | Representative `available` payload | 1,058 |
 | Representative unavailable payload range | 1,006–1,047 |
 
 Tool counts remain 17/13. The prospective maximal catalog exceeds the current
-287,000-byte ceiling by 9,868 bytes. This placement is deliberately representative,
+289,000-byte ceiling by 9,161 bytes. This placement is deliberately representative,
 not approved architecture, but it proves that result DTOs are not free: one 3,493-byte
 record repeated in three generated output schemas costs 10,548 catalog bytes.
 

@@ -42,12 +42,12 @@ does not expand with the result record.
 Measured against the canonical source-generated schemas and representative
 available/incompatible results:
 
-- current maximal catalog: **286,596 bytes**
-- current default catalog: **253,428 bytes**
+- current maximal catalog: **287,613 bytes**
+- current default catalog: **254,445 bytes**
 - existing `compare_to_baseline` output-schema delta is **0 bytes**
 - standalone typed request-latency result schema: **10,142 bytes**
 - projected catalog if that result were wired into the typed output schema:
-  **296,736 bytes** (**+10,140 bytes**)
+  **297,753 bytes** (**+10,140 bytes**)
 - representative available result payload: **5,688 bytes**
 - representative incompatible result payload: **6,277 bytes**
 
@@ -67,19 +67,19 @@ output schema does not expand.
 Measured against the source-generated result schema and representative
 available/incompatible/degraded results:
 
-- current maximal catalog: **286,596 bytes**
-- current default catalog: **253,428 bytes**
+- current maximal catalog: **287,613 bytes**
+- current default catalog: **254,445 bytes**
 - CPU-hotspot existing `compare_to_baseline` output-schema delta is **0 bytes**
 - standalone typed CPU-hotspot result schema: **15,593 bytes**
 - projected catalog if wired into the typed output schema:
-  **302,187 bytes** (**+15,591 bytes**)
+  **303,204 bytes** (**+15,591 bytes**)
 - representative available result payload: **10,019 bytes**
 - representative incompatible result payload: **9,141 bytes**
 - representative degraded result payload: **9,115 bytes**
 
 The bounded result is therefore paid only by callers that request this
 comparison. Adding it to the registered typed output schema would exceed the
-287,000-byte maximal-catalog ceiling.
+289,000-byte maximal-catalog ceiling.
 
 ### Allocation reproducibility interpretation wording (#1342)
 
@@ -103,6 +103,38 @@ No tool, parameter, output-schema property or registration gate was added. The
 maximum 8-capture × top-16 result payload is **38,257 bytes** after the shared
 summary/assumption/limitation wording update; this per-call payload does not
 expand `tools/list`.
+
+### ThreadPool quantity metadata (2026-11-02, #1353)
+
+The existing
+`dotnet-diagnostics/threadpool-backlog-evidence/v1` record now carries the
+additive
+`dotnet-diagnostics/threadpool-backlog-quantity-metadata/v1` block. It gives
+the queue-length and worker-count series stable source IDs, `items` versus
+`threads` units, `window-mean` aggregation and `none` normalization. Each
+descriptor separately declares the Theil-Sen slope as `items/s` or
+`threads/s`, with `median-pairwise-slope` aggregation normalized by
+`elapsed-seconds`. The outer evidence schema remains v1. Missing metadata on an
+old artifact is `legacy_unavailable`; current defaults are not inferred.
+
+The real HTTP budget test measures:
+
+- **287,613 bytes** for the maximal 17-tool catalog;
+- **254,445 bytes** for the default 13-tool subset;
+- **+1,017 bytes** for each catalog relative to the pre-#1353
+  286,596/253,428-byte baseline;
+- **1,387 bytes** of maximal-catalog headroom under the new 289,000-byte
+  ceiling;
+- ThreadPool backlog evidence schema: **4,739 bytes**;
+- representative available payload: **1,351 bytes**;
+- representative loss-abstention payload: **1,163 bytes**;
+- representative legacy payload with missing quantity metadata: **755 bytes**.
+
+No MCP tool, parameter, registration gate, queue threshold, occupancy,
+duration, drained-tail field, loss/truncation/cadence abstention, reason
+provenance or no-starvation-verdict behavior changed. The schema cost comes
+only from the typed additive metadata repeated on the existing counter output
+schema.
 
 ## Reproduce
 
@@ -129,9 +161,10 @@ record; tool counts and registration gates remain unchanged.
 
 ### Objective retained-growth Core/CLI contract (2026-11-01, #1325)
 
-The executable HTTP budget test measures **286,596 bytes** for the maximal
-17-tool catalog and **253,428 bytes** for the default 13-tool subset after the
-#1323 typed counter-output addition and #1342 wording hardening. The retained-growth
+The executable HTTP budget test measures **287,613 bytes** for the maximal
+17-tool catalog and **254,445 bytes** for the default 13-tool subset after the
+#1323 typed counter-output addition, #1342 wording hardening and #1353 quantity
+metadata. The retained-growth
 shipping catalog delta is **0 bytes**: objective retained growth adds no MCP
 tool, and the existing `query_snapshot.data` output remains intentionally
 unconstrained.
@@ -142,12 +175,12 @@ three-pair gcdump payload (including compatibility, methods, counts,
 allocation evidence, observer effects, availability, assumptions, and
 limitations) at **8,203 bytes**. These are result-contract and per-response
 costs, not `tools/list` costs. The 17/13 tool counts remain unchanged, and
-retained growth requires no increase beyond the current **287,000-byte** ceiling.
+retained growth requires no increase beyond the current **289,000-byte** ceiling.
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 
-The real HTTP test measures the current shipping catalog at **286,596 bytes**
-for the maximal 17-tool surface and **253,428 bytes** for the default 13 tools.
+The real HTTP test measures the current shipping catalog at **287,613 bytes**
+for the maximal 17-tool surface and **254,445 bytes** for the default 13 tools.
 
 The same executable test generates a design-only representative statistical
 evidence schema and projects it onto the existing `collect_events`,
@@ -155,15 +188,15 @@ evidence schema and projects it onto the existing `collect_events`,
 tool or changing production DTOs:
 
 - representative evidence schema: **3,493 bytes**;
-- prospective maximal catalog: **297,144 bytes** (**+10,548**);
-- prospective default catalog: **263,976 bytes** (**+10,548**);
+- prospective maximal catalog: **298,161 bytes** (**+10,548**);
+- prospective default catalog: **264,993 bytes** (**+10,548**);
 - representative available payload: **1,058 bytes**;
 - representative unavailable payloads: **1,006–1,047 bytes**.
 
 The projection is deliberately conservative and is not approved field placement.
 It proves that a result record repeated across generated output schemas is not
-free. The current 287,000-byte shipping ceiling already includes #1323's exact
-single-scenario placement; #1308 therefore
+free. The current 289,000-byte shipping ceiling includes #1323's exact
+single-scenario placement and #1353's quantity metadata; #1308 therefore
 defers a shared public record until scenario vertical slices justify exact
 placement and a deliberate catalog-budget decision. The contract and interpretation
 are in
