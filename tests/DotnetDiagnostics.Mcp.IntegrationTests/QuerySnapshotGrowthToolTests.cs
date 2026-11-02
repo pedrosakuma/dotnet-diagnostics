@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DotnetDiagnostics.Core.Comparison;
 using DotnetDiagnostics.Core.Drilldown;
 using DotnetDiagnostics.Core.Dump;
@@ -6,13 +7,14 @@ using DotnetDiagnostics.Core.Security;
 using DotnetDiagnostics.Mcp.Security;
 using DotnetDiagnostics.Mcp.Tools;
 using FluentAssertions;
+using ModelContextProtocol;
 
 namespace DotnetDiagnostics.Mcp.IntegrationTests;
 
 public sealed class QuerySnapshotGrowthToolTests
 {
     [Fact]
-    public async Task Growth_TwoLiveHeapHandles_ReturnsRankedGrowthEnvelope()
+    public async Task Growth_TwoLiveHeapHandles_ReturnsVersionedVerdictFreeObservation()
     {
         var store = new MemoryDiagnosticHandleStore();
         var baseline = store.Register(123, "heap-snapshot", HeapSnapshot(("Leaky.Cache", 1_000_000, 10), ("Noise", 100, 1)), TimeSpan.FromMinutes(10));
@@ -21,12 +23,22 @@ public sealed class QuerySnapshotGrowthToolTests
         var result = await Growth(store, current.Id, baseline.Id);
 
         result.Error.Should().BeNull();
-        var growth = result.Data.Should().BeOfType<HeapGrowthResult>().Subject;
-        growth.Verdict.Should().Be("leak_suspected");
+        var growth = result.Data.Should().BeOfType<HeapGrowthObservation>().Subject;
+        growth.Schema.Should().Be(HeapGrowthObservation.SchemaV2);
         growth.RankBy.Should().Be("bytes");
         growth.Growers.Should().HaveCount(2);
         growth.Growers[0].TypeFullName.Should().Be("Leaky.Cache");
         growth.Growers[0].BytesDelta.Should().Be(4_000_000);
+        result.Summary.Should().Contain("Pairwise retained-growth observation only")
+            .And.Contain("not assessed")
+            .And.NotContain("Verdict")
+            .And.NotContain("leak_suspected");
+
+        using var wire = JsonDocument.Parse(JsonSerializer.Serialize(result.Data, McpJsonUtilities.DefaultOptions));
+        wire.RootElement.GetProperty("schema").GetString().Should().Be(HeapGrowthObservation.SchemaV2);
+        wire.RootElement.TryGetProperty("verdict", out _).Should().BeFalse();
+        wire.RootElement.TryGetProperty("objectiveRetainedGrowth", out _).Should().BeFalse(
+            "the Core/CLI retained-growth-evidence/v1 contract is not an MCP response");
     }
 
     [Fact]
@@ -48,7 +60,7 @@ public sealed class QuerySnapshotGrowthToolTests
         var result = await Growth(store, current.Id, baseline.Id);
 
         result.Error.Should().BeNull();
-        var growth = result.Data.Should().BeOfType<HeapGrowthResult>().Subject;
+        var growth = result.Data.Should().BeOfType<HeapGrowthObservation>().Subject;
         var grower = growth.Growers.Should().ContainSingle().Which;
         grower.RetentionPaths.Should().ContainSingle();
         grower.RetentionPaths![0].Chain.Should().HaveCount(HeapSnapshotQueryDispatcher.MaxProjectedRetentionFrames);
@@ -56,6 +68,28 @@ public sealed class QuerySnapshotGrowthToolTests
         grower.TotalRetentionPaths.Should().Be(3);
         grower.OmittedRetentionPaths.Should().Be(2);
         result.Hints.Should().BeEmpty("the growth response already contains the requested retention evidence");
+    }
+
+    [Fact]
+    public async Task Growth_NoMatchingGrowers_DoesNotEmitStableOrHealthySemantics()
+    {
+        var store = new MemoryDiagnosticHandleStore();
+        var baseline = store.Register(123, "heap-snapshot", HeapSnapshot(("Cache.Entry", 5_000, 50)), TimeSpan.FromMinutes(10));
+        var current = store.Register(123, "heap-snapshot", HeapSnapshot(("Cache.Entry", 5_000, 50)), TimeSpan.FromMinutes(10));
+
+        var result = await Growth(store, current.Id, baseline.Id);
+
+        result.Error.Should().BeNull();
+        var growth = result.Data.Should().BeOfType<HeapGrowthObservation>().Subject;
+        growth.Growers.Should().BeEmpty();
+        result.Summary.Should().Contain("Observed no types meeting the positive-growth filter")
+            .And.Contain("not assessed")
+            .And.NotContain("stable")
+            .And.NotContain("healthy")
+            .And.NotContain("Verdict");
+
+        var wire = JsonSerializer.Serialize(result.Data, McpJsonUtilities.DefaultOptions);
+        wire.Should().NotContain("leak_suspected").And.NotContain("\"stable\"");
     }
 
     [Fact]
@@ -139,7 +173,7 @@ public sealed class QuerySnapshotGrowthToolTests
         var result = await Growth(store, current.Id, baseline.Id, rankBy: "instances");
 
         result.Error.Should().BeNull();
-        var growth = result.Data.Should().BeOfType<HeapGrowthResult>().Subject;
+        var growth = result.Data.Should().BeOfType<HeapGrowthObservation>().Subject;
         growth.RankBy.Should().Be("instances");
         growth.Growers[0].TypeFullName.Should().Be("ManyInstances");
     }

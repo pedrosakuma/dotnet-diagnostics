@@ -282,6 +282,16 @@ public sealed class RetainedGrowthScenarioLiveTests
                     traffic.SampledBytes,
                     traffic.SampleEvents,
                     traffic.LostOrDropped),
+            Compatibility = new(
+                RetainedGrowthCompatibilitySchemas.V1,
+                new(
+                    "retained-growth-known-shape",
+                    "1",
+                    variant.ToString().ToLowerInvariant(),
+                    "1",
+                    $"objectCount={WorkloadObjects};payloadBytes={PayloadBytes};batches=10",
+                    "post-stabilization"),
+                new(WorkloadObjects, 2)),
         };
 
         return new(

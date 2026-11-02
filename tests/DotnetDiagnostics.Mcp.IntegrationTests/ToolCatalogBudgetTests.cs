@@ -577,6 +577,62 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
     }
 
     [Fact]
+    public async Task McpHeapGrowthObservation_MeasuresProjectionAndZeroCatalogDelta()
+    {
+        await using var client = await ConnectAsync();
+        var result = await client.ListToolsAsync(
+            new ListToolsRequestParams(),
+            cancellationToken: CancellationToken.None);
+        var clientTools = await client.ListToolsAsync(cancellationToken: CancellationToken.None);
+        var current = ToolCatalogMeasurement.Measure(result);
+        var schema = McpJsonUtilities.DefaultOptions.GetJsonSchemaAsNode(
+            typeof(HeapGrowthObservation),
+            new JsonSchemaExporterOptions
+            {
+                TreatNullObliviousAsNonNullable = true,
+            });
+        var schemaBytes = SerializedLength(schema);
+        var payloadBytes = JsonSerializer.SerializeToUtf8Bytes(
+            RepresentativeMcpHeapGrowthObservation(),
+            McpJsonUtilities.DefaultOptions).Length;
+        var querySnapshotData = clientTools.Single(tool => tool.Name == "query_snapshot")
+            .ReturnJsonSchema!.Value.GetProperty("properties").GetProperty("data");
+
+        _output.WriteLine($"MCP heap-growth observation schema: {schemaBytes:N0} bytes");
+        _output.WriteLine($"MCP heap-growth representative payload: {payloadBytes:N0} bytes");
+        _output.WriteLine(
+            $"MCP heap-growth shipping catalog: {current.SerializedBytes:N0} maximal / " +
+            $"{current.DefaultCatalogBytes:N0} default bytes (delta +0 / +0)");
+
+        result.Tools.Should().HaveCount(17);
+        querySnapshotData.EnumerateObject().Should().BeEmpty(
+            "the versioned growth projection remains inside query_snapshot's unconstrained data envelope");
+        current.SerializedBytes.Should().BeLessThanOrEqualTo(MaximumCatalogBytes);
+        schemaBytes.Should().BeLessThanOrEqualTo(20_000);
+        payloadBytes.Should().BeLessThanOrEqualTo(16_384);
+
+        var budgetReport = File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "docs",
+            "research",
+            "mcp-tool-catalog-budget.md"));
+        foreach (var measuredBytes in new[]
+                 {
+                     current.SerializedBytes,
+                     current.DefaultCatalogBytes,
+                     schemaBytes,
+                     payloadBytes,
+                 })
+        {
+            budgetReport.Should().Contain(
+                measuredBytes.ToString("N0", CultureInfo.InvariantCulture),
+                "the catalog budget report must carry the executable MCP heap-growth measurement");
+        }
+        budgetReport.Should().Contain(
+            "MCP heap-growth observation catalog delta is **0 bytes**");
+    }
+
+    [Fact]
     public void StatisticalMethodRegistry_DefinesTheDesignOnlyFoundation()
     {
         var registryPath = Path.Combine(
@@ -825,10 +881,86 @@ public sealed class ToolCatalogBudgetTests : IClassFixture<ToolCatalogBudgetTest
                         11_000_000 + (index * 100_000),
                         1_000 + index,
                         LostOrDropped: 0),
+                    Compatibility = new(
+                        RetainedGrowthCompatibilitySchemas.V1,
+                        new(
+                            "retained-growth-known-shape",
+                            "1",
+                            "apply-retained-objects",
+                            "1",
+                            "objectCount=20000;payloadBytes=32",
+                            "post-stabilization"),
+                        new(20_000, 60)),
                 };
             })
             .ToArray();
         return RetainedGrowthEvidence.Build(target, attempts);
+    }
+
+    private static HeapGrowthObservation RepresentativeMcpHeapGrowthObservation()
+    {
+        var quality = new EvidenceQuality(
+            EvidenceQuality.SchemaV1,
+            [
+                new EvidenceLimitation(
+                    EvidenceLimitationCategory.MechanismUnobservable,
+                    "live-heap-walk",
+                    null,
+                    "The pairwise live heap walk does not establish equivalent workload or future trajectory."),
+            ],
+            new EvidenceConclusionPolicy(
+                EvidenceConclusionSupport.Supported,
+                EvidenceConclusionSupport.Inconclusive,
+                EvidenceConclusionSupport.Inconclusive));
+        var grower = new HeapTypeGrowth(
+            "Example.RetainedNode",
+            "Example.dll",
+            1_000_000,
+            1_640_000,
+            640_000,
+            64,
+            10_000,
+            30_000,
+            20_000,
+            200,
+            IsNew: false)
+        {
+            Identity = new TypeIdentity("Example.RetainedNode") { ModuleName = "Example.dll" },
+            RetentionPaths =
+            [
+                new RetentionPath(
+                    "Example.RetainedNode",
+                    0xDEAD,
+                    [new RetentionFrame("Example.Cache", 0xBEEF)],
+                    Truncated: false),
+            ],
+            TotalRetentionPaths = 1,
+            OmittedRetentionPaths = 0,
+        };
+
+        return new HeapGrowthObservation(
+            HeapGrowthObservation.SchemaV2,
+            "baseline-handle",
+            "current-handle",
+            1234,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch.AddMinutes(1),
+            TimeSpan.FromMinutes(1),
+            HeapGrowthDiff.RankByBytes,
+            5,
+            8_000_000,
+            8_640_000,
+            640_000,
+            1,
+            [grower])
+        {
+            Notes =
+            [
+                "Pairwise retained-growth observation only; workload equivalence and leak status are not assessed.",
+            ],
+            BaselineQuality = quality,
+            CurrentQuality = quality,
+        };
     }
 
     private static HeapSnapshotArtifact RetainedGrowthSnapshot(

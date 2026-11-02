@@ -268,8 +268,18 @@ public sealed class SessionReplTests
         stderr.Should().BeEmpty();
         stdout.Should().Contain("retained growth for System.String");
         stdout.Should().Contain("Pair: Available bytes=4096 -> 8192 delta=+4096");
-        stdout.Should().Contain("Repeated: InsufficientObservations acceptedPairs=1");
+        stdout.Should().Contain("Repeated: Incompatible acceptedPairs=0");
         stdout.Should().NotContain("leak_suspected");
+
+        var (jsonExit, jsonStdout, jsonStderr) = await RunReplAsync(
+            $"query --handle {current.Id} --baseline-handle {baseline.Id} --view growth --type-filter System.String --json\nexit\n",
+            services);
+        jsonExit.Should().Be(0);
+        jsonStderr.Should().BeEmpty();
+        jsonStdout.Should().Contain("\"schema\": \"dotnet-diagnostics/retained-growth-evidence/v1\"");
+        jsonStdout.Should().Contain("\"repeatedPoolingAvailability\": \"incompatible\"");
+        jsonStdout.Should().Contain("\"retainedBytesDelta\": 4096");
+        jsonStdout.Should().NotContain("\"compatibilitySchema\"");
     }
 
     [Fact]

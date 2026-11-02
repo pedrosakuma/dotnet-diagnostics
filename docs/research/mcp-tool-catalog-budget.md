@@ -159,7 +159,7 @@ provenance and unavailable-p95 fields instead of replacing the contract with an
 opaque object. The existing `collect_events` counter output path carries the
 record; tool counts and registration gates remain unchanged.
 
-### Objective retained-growth Core/CLI contract (2026-11-01, #1325)
+### Objective retained-growth Core/CLI contract (2026-11-02, #1325 and #1354)
 
 The executable HTTP budget test measures **287,613 bytes** for the maximal
 17-tool catalog and **254,445 bytes** for the default 13-tool subset after the
@@ -170,12 +170,29 @@ tool, and the existing `query_snapshot.data` output remains intentionally
 unconstrained.
 
 The same test measures the actual Core
-`RetainedGrowthEvidenceResult` schema at **11,663 bytes** and a representative
+`RetainedGrowthEvidenceResult` schema at **13,314 bytes** and a representative
 three-pair gcdump payload (including compatibility, methods, counts,
-allocation evidence, observer effects, availability, assumptions, and
-limitations) at **8,203 bytes**. These are result-contract and per-response
-costs, not `tools/list` costs. The 17/13 tool counts remain unchanged, and
-retained growth requires no increase beyond the current **289,000-byte** ceiling.
+separate retained-byte/instance quantities, workload phase, observation
+opportunity, bootstrap provenance, allocation evidence, observer effects,
+availability, assumptions, and limitations) at **10,726 bytes**. These are
+result-contract and per-response costs, not `tools/list` costs. The 17/13 tool
+counts remain unchanged, and retained growth requires no increase beyond the
+current **289,000-byte** ceiling.
+
+### MCP pairwise heap-growth observation (2026-11-02, #1352)
+
+The executable HTTP budget test measures **286,596 bytes** for the maximal
+17-tool catalog and **253,428 bytes** for the default 13-tool subset. The
+MCP heap-growth observation catalog delta is **0 bytes** because the versioned
+`dotnet-diagnostics/mcp-heap-growth-observation/v2` projection remains inside
+the existing unconstrained `query_snapshot.data` envelope and adds no tool.
+
+The verdict-free projection schema is **5,822 bytes**, and a representative
+payload with baseline/current heap totals, one per-type byte/instance delta,
+quality, notes, identity, and one bounded retention path is **1,894 bytes**.
+These are per-result schema/payload costs, not `tools/list` additions. The
+projection deliberately omits both the legacy Core `Verdict` member and the
+Core/CLI-only objective retained-growth evidence block.
 
 ### Scenario-first statistical evidence prospective cost (2026-10-30, #1308)
 

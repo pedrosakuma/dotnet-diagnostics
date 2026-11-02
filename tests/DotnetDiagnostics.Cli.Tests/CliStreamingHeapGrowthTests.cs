@@ -31,6 +31,10 @@ public sealed class CliStreamingHeapGrowthTests
         capability.GetProperty("queryView").GetString().Should().Be("growth");
         capability.GetProperty("handleKind").GetString().Should().Be("heap-snapshot");
         capability.GetProperty("baselineField").GetString().Should().Be("baselineHandle");
+        capability.GetProperty("compatibilityIdentityField").GetString()
+            .Should().Be("compatibilityIdentity");
+        capability.GetProperty("compatibilitySchema").GetString()
+            .Should().Be("dotnet-diagnostics/retained-growth-compatibility/v1");
         capability.GetProperty("rankBy").EnumerateArray().Select(item => item.GetString())
             .Should().Equal("bytes", "instances");
         capability.GetProperty("requiresSameProcess").GetBoolean().Should().BeTrue();
@@ -149,6 +153,7 @@ public sealed class CliStreamingHeapGrowthTests
                 baselineHandle = primaryBaseline.Id,
                 view = "growth",
                 typeFilter = "Leaky.Cache",
+                compatibilityIdentity = CompatibilityIdentity(),
                 comparisonPairs = new object[]
                 {
                     new
@@ -158,6 +163,7 @@ public sealed class CliStreamingHeapGrowthTests
                         currentHandle = secondCurrent.Id,
                         observedGen2Collections = 2,
                         allocation = new { sampledBytes = 50_000L, sampleEvents = 20L, lostOrDropped = 0L },
+                        compatibilityIdentity = CompatibilityIdentity(),
                     },
                     new
                     {
@@ -165,6 +171,7 @@ public sealed class CliStreamingHeapGrowthTests
                         baselineHandle = thirdBaseline.Id,
                         currentHandle = thirdCurrent.Id,
                         allocation = new { sampledBytes = 70_000L, sampleEvents = 30L, lostOrDropped = 0L },
+                        compatibilityIdentity = CompatibilityIdentity(),
                     },
                     new
                     {
@@ -189,12 +196,132 @@ public sealed class CliStreamingHeapGrowthTests
         objective.GetProperty("repeated").GetProperty("availability").GetString().Should().Be("available");
         objective.GetProperty("repeated").GetProperty("medianRetainedBytesDelta").GetDouble()
             .Should().Be(1_200);
+        objective.GetProperty("repeated").GetProperty("compatibilityIdentitySha256")
+            .GetString().Should().HaveLength(64);
+        objective.GetProperty("pairs")[0].GetProperty("compatibilityIdentity")
+            .GetProperty("retainedBytesQuantity").GetProperty("unit").GetString()
+            .Should().Be("bytes");
+        objective.GetProperty("pairs")[0].GetProperty("compatibilityIdentity")
+            .GetProperty("retainedInstancesQuantity").GetProperty("unit").GetString()
+            .Should().Be("instances");
         objective.GetProperty("allocationEvidence").GetProperty("availability").GetString()
             .Should().Be("available");
         objective.GetProperty("allocationEvidence").GetProperty("medianSampledBytes").GetDouble()
             .Should().Be(60_000);
         objective.GetProperty("pairs")[0].GetProperty("retainedBytesDelta").GetInt64()
             .Should().Be(1_000);
+    }
+
+    [Fact]
+    public async Task Query_Growth_LegacyObjectiveRequestKeepsPairButDoesNotPoolRepeatedEvidence()
+    {
+        var (processId, baselineTime) = CurrentProcessCaptureIdentity();
+        var store = new MemoryDiagnosticHandleStore();
+        var primaryBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime, null, ("Cache", 1_000, 10)));
+        var primaryCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime.AddSeconds(1), null, ("Cache", 2_000, 20)));
+        var secondBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 1, baselineTime.AddSeconds(2), null, ("Cache", 2_000, 20)));
+        var secondCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 1, baselineTime.AddSeconds(3), null, ("Cache", 3_000, 30)));
+        var thirdBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 2, baselineTime.AddSeconds(4), null, ("Cache", 3_000, 30)));
+        var thirdCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 2, baselineTime.AddSeconds(5), null, ("Cache", 4_000, 40)));
+
+        var frames = await RunAsync(
+            store,
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "query",
+                requestId = "legacy-objective",
+                handle = primaryCurrent.Id,
+                baselineHandle = primaryBaseline.Id,
+                view = "growth",
+                typeFilter = "Cache",
+                comparisonPairs = new[]
+                {
+                    new { attemptId = "run-2", baselineHandle = secondBaseline.Id, currentHandle = secondCurrent.Id },
+                    new { attemptId = "run-3", baselineHandle = thirdBaseline.Id, currentHandle = thirdCurrent.Id },
+                },
+            });
+
+        var objective = frames[1].RootElement.GetProperty("result")
+            .GetProperty("objectiveRetainedGrowth");
+        objective.GetProperty("counts").GetProperty("acceptedPairs").GetInt32().Should().Be(0);
+        objective.GetProperty("repeated").GetProperty("availability").GetString()
+            .Should().Be("incompatible");
+        objective.GetProperty("pairs").EnumerateArray().Should().OnlyContain(pair =>
+            pair.GetProperty("availability").GetString() == "available"
+            && pair.GetProperty("repeatedPoolingAvailability").GetString() == "incompatible"
+            && pair.GetProperty("retainedBytesDelta").GetInt64() == 1_000
+            && pair.GetProperty("compatibilityIdentity").GetProperty("compatibilitySchema")
+                .ValueKind == JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Query_Growth_WorkloadPhaseMismatchPreservesPairAndRejectsPooling()
+    {
+        var (processId, baselineTime) = CurrentProcessCaptureIdentity();
+        var store = new MemoryDiagnosticHandleStore();
+        var primaryBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime, null, ("Cache", 1_000, 10)));
+        var primaryCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId, baselineTime.AddSeconds(1), null, ("Cache", 2_000, 20)));
+        var secondBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 1, baselineTime.AddSeconds(2), null, ("Cache", 2_000, 20)));
+        var secondCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 1, baselineTime.AddSeconds(3), null, ("Cache", 3_000, 30)));
+        var thirdBaseline = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 2, baselineTime.AddSeconds(4), null, ("Cache", 3_000, 30)));
+        var thirdCurrent = Register(store, HeapSnapshot(
+            HeapSnapshotOrigin.Dump, processId + 2, baselineTime.AddSeconds(5), null, ("Cache", 4_000, 40)));
+
+        var frames = await RunAsync(
+            store,
+            new { type = "hello", protocolVersion = 2 },
+            new
+            {
+                type = "query",
+                requestId = "phase-mismatch",
+                handle = primaryCurrent.Id,
+                baselineHandle = primaryBaseline.Id,
+                view = "growth",
+                typeFilter = "Cache",
+                compatibilityIdentity = CompatibilityIdentity(),
+                comparisonPairs = new[]
+                {
+                    new
+                    {
+                        attemptId = "run-2",
+                        baselineHandle = secondBaseline.Id,
+                        currentHandle = secondCurrent.Id,
+                        compatibilityIdentity = CompatibilityIdentity(),
+                    },
+                    new
+                    {
+                        attemptId = "run-3",
+                        baselineHandle = thirdBaseline.Id,
+                        currentHandle = thirdCurrent.Id,
+                        compatibilityIdentity = CompatibilityIdentity("cooldown"),
+                    },
+                },
+            });
+
+        var objective = frames[1].RootElement.GetProperty("result")
+            .GetProperty("objectiveRetainedGrowth");
+        objective.GetProperty("counts").GetProperty("acceptedPairs").GetInt32().Should().Be(2);
+        objective.GetProperty("repeated").GetProperty("availability").GetString()
+            .Should().Be("incompatible");
+        var rejected = objective.GetProperty("pairs").EnumerateArray()
+            .Single(pair => pair.GetProperty("attemptId").GetString() == "run-3");
+        rejected.GetProperty("availability").GetString().Should().Be("available");
+        rejected.GetProperty("repeatedPoolingAvailability").GetString().Should().Be("incompatible");
+        rejected.GetProperty("retainedBytesDelta").GetInt64().Should().Be(1_000);
+        rejected.GetProperty("compatibilityMismatches").EnumerateArray().Should().Contain(mismatch =>
+            mismatch.GetProperty("dimension").GetString() == "workload.phase");
     }
 
     [Fact]
@@ -618,6 +745,25 @@ public sealed class CliStreamingHeapGrowthTests
             snapshot,
             ttl ?? TimeSpan.FromMinutes(10),
             evictWhenProcessExits: snapshot.Origin != HeapSnapshotOrigin.Dump);
+
+    private static object CompatibilityIdentity(string phase = "post-stabilization") => new
+    {
+        schema = "dotnet-diagnostics/retained-growth-compatibility/v1",
+        workload = new
+        {
+            scenario = "retained-growth-known-shape",
+            scenarioVersion = "1",
+            workload = "apply-retained-objects",
+            workloadVersion = "1",
+            parameters = "objectCount=20000;payloadBytes=32",
+            phase,
+        },
+        observationOpportunity = new
+        {
+            operations = 20_000,
+            elapsedSeconds = 10,
+        },
+    };
 
     private static (int ProcessId, DateTimeOffset CapturedAt) CurrentProcessCaptureIdentity()
     {
