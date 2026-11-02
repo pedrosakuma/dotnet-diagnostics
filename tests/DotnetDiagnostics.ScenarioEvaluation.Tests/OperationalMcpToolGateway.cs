@@ -131,15 +131,13 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 OperationalMcpProtocolLoader.Fingerprint(definitions);
             var inventory = protocol.Inventory.Single(entry => entry.Family == family);
             var expectedToolDefinitionFingerprint =
-                arm == OperationalMcpArm.NoStatisticalFields
-                    ? inventory.ExpectedControlToolDefinitionFingerprint
-                    : inventory.ExpectedCurrentToolDefinitionFingerprint;
+                inventory.ExpectedToolDefinitionFingerprints?[arm]
+                ?? throw new InvalidDataException(
+                    $"The protocol did not freeze a tool-definition fingerprint for {arm}.");
             var responseProjectionFingerprint =
                 OperationalMcpResponseProjector.ProjectionFingerprint(projection, arm);
             var expectedResponseProjectionFingerprint =
-                arm == OperationalMcpArm.NoStatisticalFields
-                    ? projection.ExpectedControlFingerprint
-                    : projection.ExpectedCurrentFingerprint;
+                projection.ExpectedFingerprints[arm];
             if (!string.Equals(
                     catalogFingerprint,
                     protocol.ExpectedCatalogFingerprint,
