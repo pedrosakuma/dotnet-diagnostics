@@ -25,6 +25,11 @@ public static class RetainedGrowthEvidenceMethodIds
     public const string PercentileBootstrapInterval = "percentile-bootstrap-interval";
 }
 
+public static class RetainedGrowthCompatibilitySchemas
+{
+    public const string V1 = "dotnet-diagnostics/retained-growth-compatibility/v1";
+}
+
 [JsonConverter(typeof(JsonStringEnumConverter<RetainedGrowthEvidenceAvailability>))]
 public enum RetainedGrowthEvidenceAvailability
 {
@@ -70,6 +75,29 @@ public sealed record RetainedGrowthEvidenceMethod(string Id, int Version);
 
 public sealed record RetainedGrowthUnavailableField(string Field, string Reason);
 
+public sealed record RetainedGrowthQuantityIdentity(
+    string Id,
+    string Unit,
+    string Aggregation,
+    string Normalization);
+
+public sealed record RetainedGrowthWorkloadIdentity(
+    string Scenario,
+    string ScenarioVersion,
+    string Workload,
+    string WorkloadVersion,
+    string Parameters,
+    string Phase);
+
+public sealed record RetainedGrowthObservationOpportunity(
+    long Operations,
+    double ElapsedSeconds);
+
+public sealed record RetainedGrowthAttemptCompatibility(
+    string Schema,
+    RetainedGrowthWorkloadIdentity Workload,
+    RetainedGrowthObservationOpportunity ObservationOpportunity);
+
 public sealed record RetainedGrowthCompatibilityIdentity(
     string RuntimeName,
     string RuntimeVersion,
@@ -79,7 +107,12 @@ public sealed record RetainedGrowthCompatibilityIdentity(
     string QuantityRepresentation,
     string CaptureSettings,
     string IndependenceUnit,
-    string ComparisonAxis);
+    string ComparisonAxis,
+    string? CompatibilitySchema,
+    RetainedGrowthQuantityIdentity? RetainedBytesQuantity,
+    RetainedGrowthQuantityIdentity? RetainedInstancesQuantity,
+    RetainedGrowthWorkloadIdentity? Workload,
+    RetainedGrowthObservationOpportunity? ObservationOpportunity);
 
 public sealed record RetainedGrowthIdentityMismatch(
     string AttemptId,
@@ -149,6 +182,7 @@ public sealed record RetainedGrowthEvidenceAttempt(
     public string? FailureReason { get; init; }
     public int? ObservedGen2Collections { get; init; }
     public RetainedGrowthAllocationObservation? Allocation { get; init; }
+    public RetainedGrowthAttemptCompatibility? Compatibility { get; init; }
 }
 
 public sealed record RetainedGrowthPairEvidence(
@@ -172,7 +206,11 @@ public sealed record RetainedGrowthPairEvidence(
     RetainedGrowthObserverEffects ObserverEffects,
     IReadOnlyList<RetainedGrowthUnavailableField> UnavailableFields,
     IReadOnlyList<string> Assumptions,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations)
+{
+    public RetainedGrowthEvidenceAvailability RepeatedPoolingAvailability { get; init; } =
+        RetainedGrowthEvidenceAvailability.Incompatible;
+}
 
 public sealed record RetainedGrowthRepeatedEvidence(
     RetainedGrowthEvidenceAvailability Availability,
@@ -192,6 +230,9 @@ public sealed record RetainedGrowthRepeatedEvidence(
     string? RetainedBytesBootstrapSeedSha256,
     string? RetainedInstancesBootstrapSeedSha256,
     int? BootstrapResamples,
+    string? CompatibilityIdentitySha256,
+    string? BootstrapPrng,
+    string? BootstrapQuantileRule,
     IReadOnlyList<RetainedGrowthUnavailableField> UnavailableFields,
     IReadOnlyList<string> Assumptions,
     IReadOnlyList<string> Limitations);
@@ -218,6 +259,18 @@ public static class RetainedGrowthEvidence
     private const string ComparisonAxis = "capture_time";
     private const string CaptureSettings = "heap-snapshot-per-type-totals";
     private const string QuantityRepresentation = "observed-retained-shallow-bytes-and-instances";
+    private static readonly RetainedGrowthQuantityIdentity RetainedBytesQuantity =
+        new(
+            "retained-shallow-bytes",
+            "bytes",
+            "paired-delta-then-window-median",
+            "absolute-over-declared-observation-opportunity");
+    private static readonly RetainedGrowthQuantityIdentity RetainedInstancesQuantity =
+        new(
+            "retained-instances",
+            "instances",
+            "paired-delta-then-window-median",
+            "absolute-over-declared-observation-opportunity");
     private const string BootstrapPrng = "xoshiro256-star-star-v1";
     private const string BootstrapQuantileRule = "linear-r7-v1";
 
@@ -255,9 +308,13 @@ public static class RetainedGrowthEvidence
         var orderedAttempts = attempts
             .OrderBy(static attempt => attempt.AttemptId, StringComparer.Ordinal)
             .ToArray();
-        var pairs = orderedAttempts.Select(attempt => BuildPair(targetType, attempt)).ToArray();
+        var pairs = orderedAttempts
+            .Select(attempt => AssessRepeatedCompatibility(BuildPair(targetType, attempt)))
+            .ToArray();
         var canonical = pairs.FirstOrDefault(static pair =>
-            pair.Availability == RetainedGrowthEvidenceAvailability.Available)?.CompatibilityIdentity;
+            pair.Availability == RetainedGrowthEvidenceAvailability.Available
+            && pair.RepeatedPoolingAvailability == RetainedGrowthEvidenceAvailability.Available)
+            ?.CompatibilityIdentity;
         if (canonical is not null)
         {
             pairs = pairs.Select(pair => ApplyCrossAttemptCompatibility(pair, canonical)).ToArray();
@@ -266,6 +323,7 @@ public static class RetainedGrowthEvidence
 
         var accepted = pairs.Where(static pair =>
             pair.Availability == RetainedGrowthEvidenceAvailability.Available
+            && pair.RepeatedPoolingAvailability == RetainedGrowthEvidenceAvailability.Available
             && pair.RetainedBytesDelta.HasValue
             && pair.RetainedInstancesDelta.HasValue).ToArray();
         var repeated = BuildRepeated(pairs, accepted);
@@ -288,7 +346,7 @@ public static class RetainedGrowthEvidence
         var assumptions = new[]
         {
             "Each accepted pair represents one independently launched process run.",
-            "Baseline and current captures use compatible runtime, backend, type identity, and capture semantics.",
+            "Baseline and current captures use compatible runtime, backend, type identity, capture semantics, workload phase, and observation opportunity.",
             "Observed per-type bytes are shallow retained bytes in the heap snapshot, not transitive retained size.",
         };
         var limitations = new List<string>
@@ -364,7 +422,7 @@ public static class RetainedGrowthEvidence
         var rootPaths = GetRootPathEvidence(targetType, current);
         var observerEffects = PairObserverEffects(attempt, baseline, current);
         var mismatches = ValidatePairCompatibility(attempt.AttemptId, baseline, current);
-        var identity = BuildIdentity(targetType, current);
+        var identity = BuildIdentity(targetType, current, attempt.Compatibility);
         if (mismatches.Count > 0)
         {
             unavailable.Add(new("retainedBytesDelta", "capture_identity_mismatch"));
@@ -551,6 +609,7 @@ public static class RetainedGrowthEvidence
         RetainedGrowthCompatibilityIdentity canonical)
     {
         if (pair.Availability != RetainedGrowthEvidenceAvailability.Available
+            || pair.RepeatedPoolingAvailability != RetainedGrowthEvidenceAvailability.Available
             || pair.CompatibilityIdentity is not { } actual)
         {
             return pair;
@@ -564,15 +623,8 @@ public static class RetainedGrowthEvidence
 
         return pair with
         {
-            Availability = RetainedGrowthEvidenceAvailability.Incompatible,
-            RetainedBytesDelta = null,
-            RetainedInstancesDelta = null,
+            RepeatedPoolingAvailability = RetainedGrowthEvidenceAvailability.Incompatible,
             CompatibilityMismatches = mismatches,
-            UnavailableFields =
-            [
-                new("retainedBytesDelta", "cross_attempt_compatibility_mismatch"),
-                new("retainedInstancesDelta", "cross_attempt_compatibility_mismatch"),
-            ],
             Limitations = [.. pair.Limitations, "This pair was not pooled with the canonical compatible process-run identity."],
         };
     }
@@ -586,6 +638,7 @@ public static class RetainedGrowthEvidence
         {
             var pair = pairs[index];
             if (pair.Availability != RetainedGrowthEvidenceAvailability.Available
+                || pair.RepeatedPoolingAvailability != RetainedGrowthEvidenceAvailability.Available
                 || pair.ProcessId is not { } processId
                 || processIds.Add(processId))
             {
@@ -595,9 +648,7 @@ public static class RetainedGrowthEvidence
 
             result[index] = pair with
             {
-                Availability = RetainedGrowthEvidenceAvailability.Incompatible,
-                RetainedBytesDelta = null,
-                RetainedInstancesDelta = null,
+                RepeatedPoolingAvailability = RetainedGrowthEvidenceAvailability.Incompatible,
                 CompatibilityMismatches =
                 [
                     .. pair.CompatibilityMismatches,
@@ -608,11 +659,6 @@ public static class RetainedGrowthEvidence
                         processId.ToString(CultureInfo.InvariantCulture),
                         "cross_attempt_process_id_reused"),
                 ],
-                UnavailableFields =
-                [
-                    new("retainedBytesDelta", "process_run_independence_not_established"),
-                    new("retainedInstancesDelta", "process_run_independence_not_established"),
-                ],
                 Limitations =
                 [
                     .. pair.Limitations,
@@ -621,6 +667,35 @@ public static class RetainedGrowthEvidence
             };
         }
         return result;
+    }
+
+    private static RetainedGrowthPairEvidence AssessRepeatedCompatibility(
+        RetainedGrowthPairEvidence pair)
+    {
+        if (pair.Availability != RetainedGrowthEvidenceAvailability.Available)
+        {
+            return pair with { RepeatedPoolingAvailability = pair.Availability };
+        }
+
+        var mismatches = ValidateRequiredRepeatedIdentity(pair.AttemptId, pair.CompatibilityIdentity);
+        if (mismatches.Count == 0)
+        {
+            return pair with
+            {
+                RepeatedPoolingAvailability = RetainedGrowthEvidenceAvailability.Available,
+            };
+        }
+
+        return pair with
+        {
+            RepeatedPoolingAvailability = RetainedGrowthEvidenceAvailability.Incompatible,
+            CompatibilityMismatches = mismatches,
+            Limitations =
+            [
+                .. pair.Limitations,
+                "Exact single-pair retained growth remains available, but this pair cannot enter repeated pooling because required compatibility identity is missing or invalid.",
+            ],
+        };
     }
 
     private static RetainedGrowthRepeatedEvidence BuildRepeated(
@@ -644,20 +719,27 @@ public static class RetainedGrowthEvidence
 
         if (accepted.Length < RetainedGrowthEvidenceBounds.MinimumRobustPairs)
         {
-            const string reason = "minimum_three_compatible_process_run_pairs_not_met";
+            var repeatedIdentityIncompatible = pairs.Any(static pair =>
+                pair.Availability == RetainedGrowthEvidenceAvailability.Available
+                && pair.RepeatedPoolingAvailability == RetainedGrowthEvidenceAvailability.Incompatible);
+            var reason = repeatedIdentityIncompatible
+                ? "required_repeated_compatibility_identity_missing_or_mismatched"
+                : "minimum_three_compatible_process_run_pairs_not_met";
             unavailable.Add(new("medianRetainedBytesDelta", reason));
             unavailable.Add(new("medianRetainedInstancesDelta", reason));
             unavailable.Add(new("retainedBytesDeltaMad", reason));
             unavailable.Add(new("retainedInstancesDeltaMad", reason));
             unavailable.Add(new("retainedBytesDeltaInterval", reason));
             unavailable.Add(new("retainedInstancesDeltaInterval", reason));
-            var primary = pairs.Any(static pair => pair.Availability == RetainedGrowthEvidenceAvailability.LossDetected)
-                ? RetainedGrowthEvidenceAvailability.LossDetected
-                : pairs.Any(static pair => pair.Availability == RetainedGrowthEvidenceAvailability.UnsupportedApproximation)
-                    ? RetainedGrowthEvidenceAvailability.UnsupportedApproximation
-                    : pairs.Any(static pair => pair.Availability == RetainedGrowthEvidenceAvailability.Incompatible)
-                        ? RetainedGrowthEvidenceAvailability.Incompatible
-                        : RetainedGrowthEvidenceAvailability.InsufficientObservations;
+            var primary = repeatedIdentityIncompatible
+                ? RetainedGrowthEvidenceAvailability.Incompatible
+                : pairs.Any(static pair => pair.Availability == RetainedGrowthEvidenceAvailability.LossDetected)
+                    ? RetainedGrowthEvidenceAvailability.LossDetected
+                    : pairs.Any(static pair => pair.Availability == RetainedGrowthEvidenceAvailability.UnsupportedApproximation)
+                        ? RetainedGrowthEvidenceAvailability.UnsupportedApproximation
+                        : pairs.Any(static pair => pair.Availability == RetainedGrowthEvidenceAvailability.Incompatible)
+                            ? RetainedGrowthEvidenceAvailability.Incompatible
+                            : RetainedGrowthEvidenceAvailability.InsufficientObservations;
             return new(
                 primary,
                 MedianMethod,
@@ -677,6 +759,9 @@ public static class RetainedGrowthEvidence
                 null,
                 null,
                 null,
+                null,
+                null,
+                null,
                 unavailable,
                 assumptions,
                 limitations);
@@ -685,8 +770,18 @@ public static class RetainedGrowthEvidence
         var bytes = accepted.Select(static pair => (double)pair.RetainedBytesDelta!.Value).ToArray();
         var instances = accepted.Select(static pair => (double)pair.RetainedInstancesDelta!.Value).ToArray();
         var orderedInputSha256 = CanonicalInputSha256(accepted);
-        var bytesBootstrap = Bootstrap(bytes, orderedInputSha256, "bytes");
-        var instancesBootstrap = Bootstrap(instances, orderedInputSha256, "instances");
+        var compatibilityIdentitySha256 =
+            CanonicalCompatibilityIdentitySha256(accepted[0].CompatibilityIdentity!);
+        var bytesBootstrap = Bootstrap(
+            bytes,
+            orderedInputSha256,
+            compatibilityIdentitySha256,
+            RetainedBytesQuantity.Id);
+        var instancesBootstrap = Bootstrap(
+            instances,
+            orderedInputSha256,
+            compatibilityIdentitySha256,
+            RetainedInstancesQuantity.Id);
         return new(
             RetainedGrowthEvidenceAvailability.Available,
             MedianMethod,
@@ -706,6 +801,9 @@ public static class RetainedGrowthEvidence
             bytesBootstrap.SeedSha256,
             instancesBootstrap.SeedSha256,
             RetainedGrowthEvidenceBounds.BootstrapResamples,
+            compatibilityIdentitySha256,
+            BootstrapPrng,
+            BootstrapQuantileRule,
             [],
             assumptions,
             limitations);
@@ -936,15 +1034,163 @@ public static class RetainedGrowthEvidence
         AddMismatch(mismatches, attemptId, "capture.settings", expected.CaptureSettings, actual.CaptureSettings, "cross_attempt_capture_settings_mismatch");
         AddMismatch(mismatches, attemptId, "independence.unit", expected.IndependenceUnit, actual.IndependenceUnit, "cross_attempt_independence_unit_mismatch");
         AddMismatch(mismatches, attemptId, "comparison.axis", expected.ComparisonAxis, actual.ComparisonAxis, "cross_attempt_comparison_axis_mismatch");
+        AddMismatch(mismatches, attemptId, "compatibility.schema", expected.CompatibilitySchema, actual.CompatibilitySchema, "cross_attempt_compatibility_schema_mismatch");
+        CompareQuantityIdentities(
+            mismatches,
+            attemptId,
+            "quantity.retainedBytes",
+            expected.RetainedBytesQuantity,
+            actual.RetainedBytesQuantity);
+        CompareQuantityIdentities(
+            mismatches,
+            attemptId,
+            "quantity.retainedInstances",
+            expected.RetainedInstancesQuantity,
+            actual.RetainedInstancesQuantity);
+        AddMismatch(mismatches, attemptId, "workload.scenario", expected.Workload?.Scenario, actual.Workload?.Scenario, "cross_attempt_scenario_mismatch");
+        AddMismatch(mismatches, attemptId, "workload.scenarioVersion", expected.Workload?.ScenarioVersion, actual.Workload?.ScenarioVersion, "cross_attempt_scenario_version_mismatch");
+        AddMismatch(mismatches, attemptId, "workload.workload", expected.Workload?.Workload, actual.Workload?.Workload, "cross_attempt_workload_mismatch");
+        AddMismatch(mismatches, attemptId, "workload.workloadVersion", expected.Workload?.WorkloadVersion, actual.Workload?.WorkloadVersion, "cross_attempt_workload_version_mismatch");
+        AddMismatch(mismatches, attemptId, "workload.parameters", expected.Workload?.Parameters, actual.Workload?.Parameters, "cross_attempt_workload_parameters_mismatch");
+        AddMismatch(mismatches, attemptId, "workload.phase", expected.Workload?.Phase, actual.Workload?.Phase, "cross_attempt_workload_phase_mismatch");
+        AddMismatch(
+            mismatches,
+            attemptId,
+            "observationOpportunity.operations",
+            FormatLong(expected.ObservationOpportunity?.Operations),
+            FormatLong(actual.ObservationOpportunity?.Operations),
+            "cross_attempt_operation_count_mismatch");
+        AddMismatch(
+            mismatches,
+            attemptId,
+            "observationOpportunity.elapsedSeconds",
+            FormatDouble(expected.ObservationOpportunity?.ElapsedSeconds),
+            FormatDouble(actual.ObservationOpportunity?.ElapsedSeconds),
+            "cross_attempt_elapsed_opportunity_mismatch");
         return mismatches;
+    }
+
+    private static List<RetainedGrowthIdentityMismatch> ValidateRequiredRepeatedIdentity(
+        string attemptId,
+        RetainedGrowthCompatibilityIdentity? identity)
+    {
+        var mismatches = new List<RetainedGrowthIdentityMismatch>();
+        if (identity is null)
+        {
+            mismatches.Add(new(
+                attemptId,
+                "compatibility.identity",
+                RetainedGrowthCompatibilitySchemas.V1,
+                null,
+                "required_repeated_compatibility_identity_missing"));
+            return mismatches;
+        }
+
+        AddMismatch(
+            mismatches,
+            attemptId,
+            "compatibility.schema",
+            RetainedGrowthCompatibilitySchemas.V1,
+            identity.CompatibilitySchema,
+            identity.CompatibilitySchema is null
+                ? "required_compatibility_schema_missing"
+                : "unsupported_compatibility_schema");
+        ValidateQuantityIdentity(
+            mismatches,
+            attemptId,
+            "quantity.retainedBytes",
+            RetainedBytesQuantity,
+            identity.RetainedBytesQuantity);
+        ValidateQuantityIdentity(
+            mismatches,
+            attemptId,
+            "quantity.retainedInstances",
+            RetainedInstancesQuantity,
+            identity.RetainedInstancesQuantity);
+        ValidateRequiredText(mismatches, attemptId, "workload.scenario", identity.Workload?.Scenario);
+        ValidateRequiredText(mismatches, attemptId, "workload.scenarioVersion", identity.Workload?.ScenarioVersion);
+        ValidateRequiredText(mismatches, attemptId, "workload.workload", identity.Workload?.Workload);
+        ValidateRequiredText(mismatches, attemptId, "workload.workloadVersion", identity.Workload?.WorkloadVersion);
+        ValidateRequiredText(mismatches, attemptId, "workload.parameters", identity.Workload?.Parameters);
+        ValidateRequiredText(mismatches, attemptId, "workload.phase", identity.Workload?.Phase);
+        if (identity.ObservationOpportunity is not { Operations: > 0 })
+        {
+            mismatches.Add(new(
+                attemptId,
+                "observationOpportunity.operations",
+                "positive_int64",
+                FormatLong(identity.ObservationOpportunity?.Operations),
+                "required_positive_operation_count_missing"));
+        }
+        if (identity.ObservationOpportunity is not { ElapsedSeconds: > 0 } opportunity
+            || !double.IsFinite(opportunity.ElapsedSeconds))
+        {
+            mismatches.Add(new(
+                attemptId,
+                "observationOpportunity.elapsedSeconds",
+                "positive_finite_seconds",
+                FormatDouble(identity.ObservationOpportunity?.ElapsedSeconds),
+                "required_positive_elapsed_opportunity_missing"));
+        }
+        return mismatches;
+    }
+
+    private static void ValidateQuantityIdentity(
+        List<RetainedGrowthIdentityMismatch> mismatches,
+        string attemptId,
+        string dimension,
+        RetainedGrowthQuantityIdentity expected,
+        RetainedGrowthQuantityIdentity? actual)
+    {
+        if (actual is null)
+        {
+            mismatches.Add(new(
+                attemptId,
+                dimension,
+                expected.Id,
+                null,
+                "required_quantity_identity_missing"));
+            return;
+        }
+        CompareQuantityIdentities(mismatches, attemptId, dimension, expected, actual);
+    }
+
+    private static void CompareQuantityIdentities(
+        List<RetainedGrowthIdentityMismatch> mismatches,
+        string attemptId,
+        string dimension,
+        RetainedGrowthQuantityIdentity? expected,
+        RetainedGrowthQuantityIdentity? actual)
+    {
+        AddMismatch(mismatches, attemptId, $"{dimension}.id", expected?.Id, actual?.Id, "cross_attempt_quantity_id_mismatch");
+        AddMismatch(mismatches, attemptId, $"{dimension}.unit", expected?.Unit, actual?.Unit, "cross_attempt_quantity_unit_mismatch");
+        AddMismatch(mismatches, attemptId, $"{dimension}.aggregation", expected?.Aggregation, actual?.Aggregation, "cross_attempt_quantity_aggregation_mismatch");
+        AddMismatch(mismatches, attemptId, $"{dimension}.normalization", expected?.Normalization, actual?.Normalization, "cross_attempt_quantity_normalization_mismatch");
+    }
+
+    private static void ValidateRequiredText(
+        List<RetainedGrowthIdentityMismatch> mismatches,
+        string attemptId,
+        string dimension,
+        string? actual)
+    {
+        if (string.IsNullOrWhiteSpace(actual))
+        {
+            mismatches.Add(new(
+                attemptId,
+                dimension,
+                "non_empty",
+                actual,
+                "required_workload_identity_dimension_missing"));
+        }
     }
 
     private static void AddMismatch(
         List<RetainedGrowthIdentityMismatch> mismatches,
         string attemptId,
         string dimension,
-        string expected,
-        string actual,
+        string? expected,
+        string? actual,
         string reason)
     {
         if (!string.Equals(expected, actual, StringComparison.Ordinal))
@@ -955,7 +1201,8 @@ public static class RetainedGrowthEvidence
 
     private static RetainedGrowthCompatibilityIdentity BuildIdentity(
         TypeIdentity targetType,
-        HeapSnapshotArtifact snapshot)
+        HeapSnapshotArtifact snapshot,
+        RetainedGrowthAttemptCompatibility? compatibility)
         => new(
             snapshot.Runtime.Name,
             snapshot.Runtime.Version,
@@ -965,7 +1212,12 @@ public static class RetainedGrowthEvidence
             QuantityRepresentation,
             CaptureSettings,
             IndependenceUnit,
-            ComparisonAxis);
+            ComparisonAxis,
+            compatibility?.Schema,
+            compatibility is null ? null : RetainedBytesQuantity,
+            compatibility is null ? null : RetainedInstancesQuantity,
+            compatibility?.Workload,
+            compatibility?.ObservationOpportunity);
 
     private static SelectedType SelectType(TypeIdentity targetType, HeapSnapshotArtifact snapshot)
     {
@@ -1054,17 +1306,65 @@ public static class RetainedGrowthEvidence
         return HexLower(SHA256.HashData(Encoding.UTF8.GetBytes(input.ToString())));
     }
 
+    private static string CanonicalCompatibilityIdentitySha256(
+        RetainedGrowthCompatibilityIdentity identity)
+    {
+        var input = new StringBuilder();
+        AppendCanonical(input, "compatibility.schema", identity.CompatibilitySchema);
+        AppendCanonical(input, "runtime.name", identity.RuntimeName);
+        AppendCanonical(input, "runtime.version", identity.RuntimeVersion);
+        AppendCanonical(input, "runtime.architecture", identity.Architecture);
+        AppendCanonical(input, "backend", identity.Backend);
+        AppendCanonical(input, "target.type", IdentityKey(identity.TargetType));
+        AppendCanonical(input, "quantity.representation", identity.QuantityRepresentation);
+        AppendCanonical(input, "quantity.retainedBytes.id", identity.RetainedBytesQuantity?.Id);
+        AppendCanonical(input, "quantity.retainedBytes.unit", identity.RetainedBytesQuantity?.Unit);
+        AppendCanonical(input, "quantity.retainedBytes.aggregation", identity.RetainedBytesQuantity?.Aggregation);
+        AppendCanonical(input, "quantity.retainedBytes.normalization", identity.RetainedBytesQuantity?.Normalization);
+        AppendCanonical(input, "quantity.retainedInstances.id", identity.RetainedInstancesQuantity?.Id);
+        AppendCanonical(input, "quantity.retainedInstances.unit", identity.RetainedInstancesQuantity?.Unit);
+        AppendCanonical(input, "quantity.retainedInstances.aggregation", identity.RetainedInstancesQuantity?.Aggregation);
+        AppendCanonical(input, "quantity.retainedInstances.normalization", identity.RetainedInstancesQuantity?.Normalization);
+        AppendCanonical(input, "capture.settings", identity.CaptureSettings);
+        AppendCanonical(input, "workload.scenario", identity.Workload?.Scenario);
+        AppendCanonical(input, "workload.scenarioVersion", identity.Workload?.ScenarioVersion);
+        AppendCanonical(input, "workload.workload", identity.Workload?.Workload);
+        AppendCanonical(input, "workload.workloadVersion", identity.Workload?.WorkloadVersion);
+        AppendCanonical(input, "workload.parameters", identity.Workload?.Parameters);
+        AppendCanonical(input, "workload.phase", identity.Workload?.Phase);
+        AppendCanonical(
+            input,
+            "observationOpportunity.operations",
+            FormatLong(identity.ObservationOpportunity?.Operations));
+        AppendCanonical(
+            input,
+            "observationOpportunity.elapsedSeconds",
+            FormatDouble(identity.ObservationOpportunity?.ElapsedSeconds));
+        AppendCanonical(input, "independence.unit", identity.IndependenceUnit);
+        AppendCanonical(input, "comparison.axis", identity.ComparisonAxis);
+        return HexLower(SHA256.HashData(Encoding.UTF8.GetBytes(input.ToString())));
+    }
+
+    private static void AppendCanonical(StringBuilder builder, string dimension, string? value)
+        => builder.Append(dimension).Append('=').Append(value).Append('\n');
+
     private static (RetainedGrowthInterval Interval, string SeedSha256) Bootstrap(
         double[] values,
         string inputSha256,
-        string quantity)
+        string compatibilityIdentitySha256,
+        string quantityId)
     {
         var seed = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join(
             "|",
             IntervalMethod.Version.ToString(CultureInfo.InvariantCulture),
             inputSha256,
-            quantity,
-            RetainedGrowthEvidenceResult.SchemaV1)));
+            compatibilityIdentitySha256,
+            quantityId,
+            RetainedGrowthEvidenceResult.SchemaV1,
+            BootstrapPrng,
+            BootstrapQuantileRule,
+            RetainedGrowthEvidenceBounds.BootstrapResamples.ToString(CultureInfo.InvariantCulture),
+            RetainedGrowthEvidenceBounds.ConfidenceLevel.ToString("R", CultureInfo.InvariantCulture))));
         var random = new Xoshiro256StarStar(seed);
         var resamples = new double[RetainedGrowthEvidenceBounds.BootstrapResamples];
         var buffer = new double[values.Length];
@@ -1132,6 +1432,12 @@ public static class RetainedGrowthEvidence
             identity.MetadataToken?.ToString(CultureInfo.InvariantCulture),
             identity.ModuleName,
             identity.ModulePath);
+
+    private static string? FormatLong(long? value)
+        => value?.ToString(CultureInfo.InvariantCulture);
+
+    private static string? FormatDouble(double? value)
+        => value?.ToString("R", CultureInfo.InvariantCulture);
 
     private static string HexLower(ReadOnlySpan<byte> bytes)
         => Convert.ToHexString(bytes).ToLowerInvariant();

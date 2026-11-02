@@ -1785,7 +1785,12 @@ internal static partial class CliStreamingProtocol
             return;
         }
 
-        if (!TryParseHeapGrowthAttempts(root, isHeapGrowth, out var comparisonAttempts, out var comparisonError))
+        if (!TryParseHeapGrowthAttempts(
+                root,
+                isHeapGrowth,
+                out var primaryGrowthCompatibility,
+                out var comparisonAttempts,
+                out var comparisonError))
         {
             await writer.WriteAsync(new
             {
@@ -1797,14 +1802,15 @@ internal static partial class CliStreamingProtocol
             return;
         }
 
-        if (comparisonAttempts.Count > 0 && typeFilter is null)
+        if ((comparisonAttempts.Count > 0 || primaryGrowthCompatibility is not null)
+            && typeFilter is null)
         {
             await writer.WriteAsync(new
             {
                 type = "error",
                 requestId,
                 code = "invalid_query",
-                message = "'comparisonPairs' requires a non-empty exact objective 'typeFilter'; legacy unfiltered growth remains a single-pair response.",
+                message = "'comparisonPairs' and 'compatibilityIdentity' require a non-empty exact objective 'typeFilter'; legacy unfiltered growth remains a single-pair response.",
             }, CancellationToken.None).ConfigureAwait(false);
             return;
         }
@@ -2108,6 +2114,7 @@ internal static partial class CliStreamingProtocol
                 minDeltaPct,
                 topN,
                 typeFilter?.Trim(),
+                primaryGrowthCompatibility,
                 comparisonAttempts,
                 cancellationToken).ConfigureAwait(false);
             return;
