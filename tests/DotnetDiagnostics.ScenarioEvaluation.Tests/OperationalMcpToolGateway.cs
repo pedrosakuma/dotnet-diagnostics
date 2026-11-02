@@ -35,7 +35,8 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         int maximumMcpPayloadBytes,
         IReadOnlyList<AgentToolDefinition> tools,
         string catalogFingerprint,
-        string toolDefinitionFingerprint)
+        string toolDefinitionFingerprint,
+        string wordingProjectionFingerprint)
     {
         _client = client;
         _budget = budget;
@@ -48,6 +49,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         Tools = tools;
         CatalogFingerprint = catalogFingerprint;
         ToolDefinitionFingerprint = toolDefinitionFingerprint;
+        WordingProjectionFingerprint = wordingProjectionFingerprint;
     }
 
     public IReadOnlyList<AgentToolDefinition> Tools { get; }
@@ -57,6 +59,8 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
     public string CatalogFingerprint { get; }
 
     public string ToolDefinitionFingerprint { get; }
+
+    public string WordingProjectionFingerprint { get; }
 
     public IReadOnlyList<OperationalMcpExchange> Exchanges => _exchanges;
 
@@ -74,9 +78,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         string artifactRoot,
         CancellationToken cancellationToken)
     {
-        if (family is not (
-            OperationalMcpFamily.AllocationReproducibility
-            or OperationalMcpFamily.CpuHotspotCaptureProfiles))
+        if (family != OperationalMcpFamily.AllocationReproducibility)
         {
             throw new ArgumentOutOfRangeException(nameof(family));
         }
@@ -117,11 +119,27 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 InputSchema = JsonNode.Parse(tool.JsonSchema.GetRawText()),
             }).ToArray();
             var catalogFingerprint = OperationalMcpProtocolLoader.Fingerprint(catalog);
-            var definitions = CreateToolDefinitions(family, requiredCaptures, selected);
+            var hardenedDefinitions = CreateToolDefinitions(
+                family,
+                requiredCaptures,
+                selected);
+            var definitions = OperationalMcpResponseProjector.ApplyToolDefinitions(
+                hardenedDefinitions,
+                arm,
+                projection);
             var toolDefinitionFingerprint =
                 OperationalMcpProtocolLoader.Fingerprint(definitions);
-            var expectedToolDefinitionFingerprint = protocol.Inventory.Single(entry =>
-                entry.Family == family).ExpectedToolDefinitionFingerprint;
+            var inventory = protocol.Inventory.Single(entry => entry.Family == family);
+            var expectedToolDefinitionFingerprint =
+                arm == OperationalMcpArm.PriorWording
+                    ? inventory.ExpectedPriorToolDefinitionFingerprint
+                    : inventory.ExpectedHardenedToolDefinitionFingerprint;
+            var wordingProjectionFingerprint =
+                OperationalMcpResponseProjector.WordingFingerprint(projection, arm);
+            var expectedWordingProjectionFingerprint =
+                arm == OperationalMcpArm.PriorWording
+                    ? projection.ExpectedPriorFingerprint
+                    : projection.ExpectedHardenedFingerprint;
             if (!string.Equals(
                     catalogFingerprint,
                     protocol.ExpectedCatalogFingerprint,
@@ -140,6 +158,15 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                     $"The model-visible tool-definition fingerprint changed for {family}: expected {expectedToolDefinitionFingerprint}, observed {toolDefinitionFingerprint}.");
             }
 
+            if (!string.Equals(
+                    wordingProjectionFingerprint,
+                    expectedWordingProjectionFingerprint,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"The {arm} wording projection fingerprint changed: expected {expectedWordingProjectionFingerprint}, observed {wordingProjectionFingerprint}.");
+            }
+
             return new(
                 client,
                 budget,
@@ -151,7 +178,8 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 protocol.Budgets.MaximumMcpPayloadBytes,
                 definitions,
                 catalogFingerprint,
-                toolDefinitionFingerprint);
+                toolDefinitionFingerprint,
+                wordingProjectionFingerprint);
         }
         catch
         {
@@ -505,23 +533,23 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
     {
         var collect = tools.Single(tool => tool.Name == "collect_sample");
         var query = tools.Single(tool => tool.Name == "query_snapshot");
-        var kind = family == OperationalMcpFamily.AllocationReproducibility
-            ? "allocation"
-            : "cpu";
-        var view = family == OperationalMcpFamily.AllocationReproducibility
-            ? "allocation-reproducibility"
-            : "hotspot-variability";
-        var comparisonProperty = family == OperationalMcpFamily.AllocationReproducibility
-            ? """
-              ,"comparisonHandles":{"type":"array","minItems":2,"maxItems":15,"items":{"type":"string"}}
-              """
-            : string.Empty;
-        var comparisonRequired = family == OperationalMcpFamily.AllocationReproducibility
-            ? ",\"comparisonHandles\""
-            : string.Empty;
-        var queryGuidance = family == OperationalMcpFamily.AllocationReproducibility
-            ? $"compare all {requiredCaptures} fresh handles in one call"
-            : $"query every one of the {requiredCaptures} fresh handles before interpretation";
+        if (family != OperationalMcpFamily.AllocationReproducibility)
+        {
+            throw new ArgumentOutOfRangeException(nameof(family));
+        }
+
+        const string kind = "allocation";
+        const string view = "allocation-reproducibility";
+        var querySchema = JsonNode.Parse(query.JsonSchema.GetRawText())?.AsObject()
+            ?? throw new InvalidDataException("The real query_snapshot schema was invalid.");
+        var queryProperties = querySchema["properties"]?.AsObject()
+            ?? throw new InvalidDataException(
+                "The real query_snapshot schema had no properties.");
+        var viewDescription = PropertyDescription(queryProperties, "view");
+        var topNDescription = PropertyDescription(queryProperties, "topN");
+        var comparisonHandlesDescription = PropertyDescription(
+            queryProperties,
+            "comparisonHandles");
         return
         [
             new(
@@ -543,23 +571,30 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                     """)),
             new(
                 query.Name,
-                $"{query.Description} This frozen case permits view='{view}'; {queryGuidance}.",
+                $"{query.Description} This frozen case permits view='{view}'; compare all {requiredCaptures} fresh handles in one call.",
                 Schema(
                     $$"""
                     {
                       "type":"object",
                       "additionalProperties":false,
-                      "required":["handle","view"{{comparisonRequired}}],
+                      "required":["handle","view","comparisonHandles"],
                       "properties":{
                         "handle":{"type":"string"},
-                        "view":{"type":"string","enum":["{{view}}"]},
-                        "topN":{"type":"integer","minimum":1,"maximum":16}
-                        {{comparisonProperty}}
+                        "view":{"type":"string","enum":["{{view}}"],"description":{{JsonSerializer.Serialize(viewDescription)}}},
+                        "topN":{"type":"integer","minimum":1,"maximum":16,"description":{{JsonSerializer.Serialize(topNDescription)}}},
+                        "comparisonHandles":{"type":"array","minItems":2,"maxItems":15,"items":{"type":"string"},"description":{{JsonSerializer.Serialize(comparisonHandlesDescription)}}}
                       }
                     }
                     """)),
         ];
     }
+
+    private static string PropertyDescription(
+        JsonObject properties,
+        string propertyName)
+        => properties[propertyName]?["description"]?.GetValue<string>()
+            ?? throw new InvalidDataException(
+                $"The real query_snapshot schema property '{propertyName}' had no description.");
 
     private static string FindServerDll()
     {
