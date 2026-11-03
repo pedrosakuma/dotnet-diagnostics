@@ -41,6 +41,7 @@ internal static class OperationalMcpAssessor
             maximumWallTimeSeconds,
             maximumInputBytes: 196_608,
             maximumTransportOutputBytes: 131_072,
+            additiveProperties: null,
             cancellationToken).ConfigureAwait(false);
 
     public static async Task<OperationalAutomatedAssessment> AssessAsync(
@@ -51,6 +52,27 @@ internal static class OperationalMcpAssessor
         int maximumWallTimeSeconds,
         int maximumInputBytes,
         int maximumTransportOutputBytes,
+        CancellationToken cancellationToken)
+        => await AssessAsync(
+            testCase,
+            investigation,
+            configuration,
+            transport,
+            maximumWallTimeSeconds,
+            maximumInputBytes,
+            maximumTransportOutputBytes,
+            additiveProperties: null,
+            cancellationToken).ConfigureAwait(false);
+
+    public static async Task<OperationalAutomatedAssessment> AssessAsync(
+        OperationalMcpCase testCase,
+        AgentHarnessReport investigation,
+        AgentModelConfiguration configuration,
+        IAgentModelTransport transport,
+        int maximumWallTimeSeconds,
+        int maximumInputBytes,
+        int maximumTransportOutputBytes,
+        IReadOnlyDictionary<string, string>? additiveProperties,
         CancellationToken cancellationToken)
     {
         var watch = Stopwatch.StartNew();
@@ -105,7 +127,10 @@ internal static class OperationalMcpAssessor
                     turn.Usage);
             }
 
-            var parsed = Parse(turn.AssistantContent, investigation.Diagnosis?.Claims.Count ?? 0);
+            var parsed = Parse(
+                turn.AssistantContent,
+                investigation.Diagnosis?.Claims.Count ?? 0,
+                additiveProperties);
             watch.Stop();
             var transportOutputBytes = turn.TransportOutputBytes > 0
                 ? turn.TransportOutputBytes
@@ -176,6 +201,23 @@ internal static class OperationalMcpAssessor
         int maximumInputBytes,
         int maximumTransportOutputBytes,
         CancellationToken cancellationToken)
+        => await PreflightAsync(
+            configuration,
+            transport,
+            maximumWallTimeSeconds,
+            maximumInputBytes,
+            maximumTransportOutputBytes,
+            additiveProperties: null,
+            cancellationToken).ConfigureAwait(false);
+
+    public static async Task<OperationalMcpPreflightReport> PreflightAsync(
+        AgentModelConfiguration configuration,
+        IAgentModelTransport transport,
+        int maximumWallTimeSeconds,
+        int maximumInputBytes,
+        int maximumTransportOutputBytes,
+        IReadOnlyDictionary<string, string>? additiveProperties,
+        CancellationToken cancellationToken)
     {
         const string prompt =
             """
@@ -224,7 +266,7 @@ internal static class OperationalMcpAssessor
                     turn);
             }
 
-            _ = Parse(turn.AssistantContent, claimCount: 1);
+            _ = Parse(turn.AssistantContent, claimCount: 1, additiveProperties);
             watch.Stop();
             return new OperationalMcpPreflightReport(
                 Stage(
@@ -313,12 +355,18 @@ internal static class OperationalMcpAssessor
         return JsonSerializer.Serialize(payload, OperationalMcpJson.Options);
     }
 
-    private static ParsedAssessment Parse(string json, int claimCount)
+    private static ParsedAssessment Parse(
+        string json,
+        int claimCount,
+        IReadOnlyDictionary<string, string>? additiveProperties)
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
+        var additive = additiveProperties
+            ?? new Dictionary<string, string>(StringComparer.Ordinal);
         RejectUnknown(
             root,
+            additive.Keys,
             "claims",
             "uncertainty",
             "uncertaintyRationale",
@@ -326,6 +374,7 @@ internal static class OperationalMcpAssessor
             "usefulNextSteps",
             "unhelpfulNextSteps",
             "summary");
+        ValidateAdditiveProperties(root, additive);
         var claims = RequiredProperty(root, "claims").EnumerateArray().Select(claim =>
         {
             RejectUnknown(claim, "index", "support", "rationale");
@@ -382,14 +431,57 @@ internal static class OperationalMcpAssessor
                 "Unsupported-certainty findings must be unique by claim and category.");
         }
 
+        var usefulNextSteps = Strings(root, "usefulNextSteps");
+        var unhelpfulNextSteps = Strings(root, "unhelpfulNextSteps");
+        var contradictoryNextSteps = usefulNextSteps
+            .Intersect(unhelpfulNextSteps, StringComparer.Ordinal)
+            .ToArray();
+        if (contradictoryNextSteps.Length > 0)
+        {
+            throw new JsonException(
+                "The same next step cannot be classified as both useful and unhelpful.");
+        }
+
         return new ParsedAssessment(
             ordered,
             Uncertainty(RequiredProperty(root, "uncertainty").GetString()),
             RequiredString(root, "uncertaintyRationale"),
             unsupportedCertainty,
-            Strings(root, "usefulNextSteps"),
-            Strings(root, "unhelpfulNextSteps"),
+            usefulNextSteps,
+            unhelpfulNextSteps,
             RequiredString(root, "summary"));
+    }
+
+    private static void ValidateAdditiveProperties(
+        JsonElement root,
+        IReadOnlyDictionary<string, string> additiveProperties)
+    {
+        foreach (var (name, expectedKind) in additiveProperties)
+        {
+            if (!root.TryGetProperty(name, out var value))
+            {
+                continue;
+            }
+
+            if (expectedKind == "stringArray")
+            {
+                if (value.ValueKind != JsonValueKind.Array)
+                {
+                    throw new JsonException(
+                        $"Additive assessment property '{name}' must be an array of strings.");
+                }
+
+                _ = value.EnumerateArray()
+                    .Select(item => item.GetString()
+                        ?? throw new JsonException(
+                            $"Additive assessment property '{name}' must be an array of strings."))
+                    .ToArray();
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"Unsupported additive assessment property kind '{expectedKind}'.");
+        }
     }
 
     private static OperationalClaimSupport Support(string? value)
@@ -523,8 +615,15 @@ internal static class OperationalMcpAssessor
         => new(status, failureKind, detail, Math.Round(duration.TotalSeconds, 3));
 
     private static void RejectUnknown(JsonElement element, params string[] allowed)
+        => RejectUnknown(element, [], allowed);
+
+    private static void RejectUnknown(
+        JsonElement element,
+        IEnumerable<string> additiveAllowed,
+        params string[] allowed)
     {
         var names = allowed.ToHashSet(StringComparer.Ordinal);
+        names.UnionWith(additiveAllowed);
         foreach (var property in element.EnumerateObject())
         {
             if (!names.Contains(property.Name))

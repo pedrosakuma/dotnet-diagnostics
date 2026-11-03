@@ -15,6 +15,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
     private readonly OperationalMcpFamily _family;
     private readonly OperationalMcpArm _arm;
     private readonly OperationalMcpProjection _projection;
+    private readonly OperationalMcpArtifactAccounting _artifactAccounting;
     private readonly int _maximumMcpPayloadBytes;
     private readonly int _processId;
     private readonly int _requiredCaptures;
@@ -22,7 +23,6 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
     private readonly HashSet<string> _queriedHandles = new(StringComparer.Ordinal);
     private readonly List<OperationalMcpExchange> _exchanges = [];
     private int _captureSeconds;
-    private int _artifactBytes;
 
     private OperationalMcpToolGateway(
         McpClient client,
@@ -43,6 +43,8 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         _family = family;
         _arm = arm;
         _projection = projection;
+        _artifactAccounting = new OperationalMcpArtifactAccounting(
+            budget.MaximumArtifactBytes);
         _processId = processId;
         _requiredCaptures = requiredCaptures;
         _maximumMcpPayloadBytes = maximumMcpPayloadBytes;
@@ -54,7 +56,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
 
     public IReadOnlyList<AgentToolDefinition> Tools { get; }
 
-    public int RetainedArtifactBytes => _artifactBytes;
+    public int RetainedArtifactBytes => _artifactAccounting.RetainedBytes;
 
     public string CatalogFingerprint { get; }
 
@@ -329,8 +331,10 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                     out projectedSchema);
             var rawBytes = Encoding.UTF8.GetByteCount(raw);
             var projectedBytes = Encoding.UTF8.GetByteCount(projected);
-            if (Math.Max(rawBytes, projectedBytes) > _maximumMcpPayloadBytes
-                || _artifactBytes + rawBytes + projectedBytes > _budget.MaximumArtifactBytes)
+            if (!_artifactAccounting.TryRetainAdmittedExchange(
+                    rawBytes,
+                    projectedBytes,
+                    _maximumMcpPayloadBytes))
             {
                 return Failure(
                     call,
@@ -338,8 +342,6 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                     "The exact MCP response plus model-visible projection exceeded the retained-artifact budget.",
                     origin);
             }
-            _artifactBytes += rawBytes + projectedBytes;
-            _artifactBytes += rawBytes + projectedBytes;
             var succeeded = errorCode is null;
             if (succeeded && call.Name == "collect_sample")
             {
@@ -707,7 +709,7 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         }.ToJsonString();
         var bytes = Encoding.UTF8.GetByteCount(content);
         var hash = BlindedDiagnosticToolGateway.Sha256(content);
-        _artifactBytes += bytes * 2;
+        _artifactAccounting.RetainFailureExchange(bytes, bytes);
         _exchanges.Add(new OperationalMcpExchange(
             _exchanges.Count + 1,
             call.Name,
@@ -757,7 +759,6 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
             Attempted: true,
             Executed: executed,
             Detail: detail);
-
     private static JsonObject Schema(string json)
         => JsonNode.Parse(json)?.AsObject()
             ?? throw new InvalidOperationException("Operational MCP tool schema was invalid.");
@@ -814,4 +815,39 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
     private sealed class AgentCaptureBudgetException(string message) : Exception(message);
 
     private sealed class AgentTargetBoundaryException(string message) : Exception(message);
+}
+
+internal sealed class OperationalMcpArtifactAccounting(int maximumBytes)
+{
+    private int _retainedBytes;
+
+    public int RetainedBytes => _retainedBytes;
+
+    public bool TryRetainAdmittedExchange(
+        int rawResponseBytes,
+        int modelVisibleResponseBytes,
+        int maximumPayloadBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumPayloadBytes);
+        var exchangeBytes = ExchangeBytes(rawResponseBytes, modelVisibleResponseBytes);
+        if (Math.Max(rawResponseBytes, modelVisibleResponseBytes) > maximumPayloadBytes
+            || exchangeBytes > maximumBytes - _retainedBytes)
+        {
+            return false;
+        }
+
+        _retainedBytes = checked(_retainedBytes + exchangeBytes);
+        return true;
+    }
+
+    public void RetainFailureExchange(int rawResponseBytes, int modelVisibleResponseBytes)
+        => _retainedBytes = checked(
+            _retainedBytes + ExchangeBytes(rawResponseBytes, modelVisibleResponseBytes));
+
+    private static int ExchangeBytes(int rawResponseBytes, int modelVisibleResponseBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(rawResponseBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(modelVisibleResponseBytes);
+        return checked(rawResponseBytes + modelVisibleResponseBytes);
+    }
 }

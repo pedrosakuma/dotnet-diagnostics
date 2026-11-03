@@ -41,6 +41,7 @@ internal static class OperationalMcpEvaluationRunner
                 protocol.Budgets.MaximumPreflightWallTimeSeconds,
                 protocol.Budgets.MaximumAssessmentInputBytes,
                 protocol.Budgets.MaximumAssessmentTransportOutputBytes,
+                protocol.AssessorAdditiveProperties,
                 suiteWallTime.Token).ConfigureAwait(false);
             if (assessorPreflight.Stage.Status != AgentHarnessStageStatus.Passed)
             {
@@ -165,7 +166,7 @@ internal static class OperationalMcpEvaluationRunner
             conclusions,
             [
                 "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, universal product claim, or automatic product-adoption verdict.",
-                "Protocol 6 isolates the current post-#1342 allocation measurement-quality fields under one shared neutral guard package; it does not reinterpret preserved protocols 1 through 5.",
+                "Protocol 7 isolates the current post-#1342 allocation measurement-quality fields under one shared neutral guard package; it does not reinterpret preserved protocols 1 through 6.",
                 "The diagnosing and assessing phases use different frozen models and isolated contexts; that does not eliminate shared-provider or training-data bias.",
                 "Fresh processes and captures reduce dependence but do not eliminate platform, scheduler, JIT, EventPipe, symbol, or workload variability.",
                 "Sample recognition cannot be ruled out because repository-owned workload symbols may appear in MCP evidence.",
@@ -292,6 +293,7 @@ internal static class OperationalMcpEvaluationRunner
             protocol.Budgets.MaximumAssessmentWallTimeSeconds,
             protocol.Budgets.MaximumAssessmentInputBytes,
             protocol.Budgets.MaximumAssessmentTransportOutputBytes,
+            protocol.AssessorAdditiveProperties,
             cancellationToken).ConfigureAwait(false);
         var exchanges = gateway?.Exchanges ?? [];
         var predeclaredHashes = exchanges
