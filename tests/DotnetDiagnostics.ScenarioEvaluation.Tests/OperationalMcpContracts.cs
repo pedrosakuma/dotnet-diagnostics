@@ -272,6 +272,34 @@ public sealed record OperationalUnsupportedCertaintyFinding(
     OperationalUnsupportedCertaintyCategory Category,
     string Rationale);
 
+public enum OperationalAssessmentFailureCategory
+{
+    InvalidJson,
+    MissingProperty,
+    UnexpectedProperty,
+    InvalidValueKind,
+    InvalidValue,
+    ContradictoryValue,
+    SchemaValidation,
+}
+
+public sealed record OperationalAssessmentFailureEvidence(
+    string ProtocolId,
+    string ProtocolFingerprint,
+    string AttemptId,
+    OperationalAssessmentFailureCategory Category,
+    string? JsonPath,
+    string? PropertyName,
+    string? ValueKind,
+    string RawResponseSha256,
+    int RawResponseBytes,
+    string AssistantContentSha256,
+    int AssistantContentBytes,
+    string? ReplayJson,
+    int RetainedBytes,
+    bool Truncated,
+    bool Redacted);
+
 public sealed record OperationalAutomatedAssessment(
     string AssessorProvider,
     string AssessorModel,
@@ -293,6 +321,10 @@ public sealed record OperationalAutomatedAssessment(
 
     public string? RawResponseSha256 { get; init; }
 
+    public OperationalAssessmentFailureEvidence? FailureEvidence { get; init; }
+
+    public int RetainedArtifactBytes { get; init; }
+
     public int UnsupportedCertaintyCount => UnsupportedCertaintyFindings.Count;
 }
 
@@ -304,7 +336,12 @@ public sealed record OperationalMcpPreflightReport(
     string PromptSha256,
     int InputBytes,
     int TransportOutputBytes,
-    string? RawResponseSha256);
+    string? RawResponseSha256)
+{
+    public OperationalAssessmentFailureEvidence? FailureEvidence { get; init; }
+
+    public int RetainedArtifactBytes { get; init; }
+}
 
 public sealed record OperationalMcpRunReport(
     int SchemaVersion,
@@ -329,6 +366,8 @@ public sealed record OperationalMcpRunReport(
     public int FollowUpToolCalls { get; init; }
 
     public int FollowUpAddedEvidenceCount { get; init; }
+
+    public int RetainedArtifactBytes { get; init; }
 }
 
 public sealed record OperationalDimensionDelta(
@@ -389,6 +428,8 @@ public sealed record OperationalMcpPilotReport(
 
     public IReadOnlyList<OperationalFactorizedFamilyConclusion> FactorizedFamilyConclusions
         { get; init; } = [];
+
+    public int RetainedArtifactBytes { get; init; }
 }
 
 internal static class OperationalMcpJson

@@ -62,7 +62,55 @@
         "commentary": "This property was not declared by the frozen protocol."
       },
       "expectedStatus": "failed",
-      "expectedDetail": "Unexpected assessment property 'commentary'."
+      "expectedDetail": "Unexpected assessment property 'commentary' at '$.commentary' with value kind String."
+    },
+    {
+      "id": "unreconstructable-protocol7-root-text-equivalent",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "Synthetic rationale."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary.",
+        "text": "Synthetic unexpected root value."
+      },
+      "expectedStatus": "failed",
+      "expectedDetail": "Unexpected assessment property 'text' at '$.text' with value kind String.",
+      "expectedPath": "$.text",
+      "expectedValueKind": "String"
+    },
+    {
+      "id": "unreconstructable-protocol7-nested-text-equivalent",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "Synthetic rationale.",
+            "text": [
+              "Synthetic unexpected nested value."
+            ]
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedDetail": "Unexpected assessment property 'text' at '$.claims[0].text' with value kind Array.",
+      "expectedPath": "$.claims[0].text",
+      "expectedValueKind": "Array"
     },
     {
       "id": "contradictory-next-step-classification",

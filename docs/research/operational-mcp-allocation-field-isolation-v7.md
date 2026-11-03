@@ -249,6 +249,21 @@ preserved zero-attempt prerequisite failure, and Protocol 7 authorizes no
 product, schema, tool, catalog, wording, or directional allocation redesign.
 #1350 remains blocked.
 
+## Post-result evaluator reliability gate
+
+Issue [#1364](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1364)
+later recovered the original evaluator-private report read-only and reproduced
+the 24/18 citation failures without rerunning any attempt. All 42 locations
+used the Copilot CLI transport's exact virtual `/json` envelope and resolved
+after only that declared segment was normalized. The two rejected assessor
+bodies were not retained, so their `text` paths and value kinds remain
+unreconstructable; synthetic root and nested fixtures validate the new bounded
+diagnostics without claiming either lost shape.
+
+The reliability gate does not modify this protocol, its report, denominators,
+decision, hashes, or conclusions. See
+[`operational-mcp-evaluator-replay-reliability-gate.md`](./operational-mcp-evaluator-replay-reliability-gate.md).
+
 ## Limitations
 
 - The inventory is finite and uses one diagnosing model and one assessor model

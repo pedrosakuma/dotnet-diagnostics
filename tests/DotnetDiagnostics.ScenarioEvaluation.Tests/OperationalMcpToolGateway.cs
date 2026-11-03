@@ -844,6 +844,24 @@ internal sealed class OperationalMcpArtifactAccounting(int maximumBytes)
         => _retainedBytes = checked(
             _retainedBytes + ExchangeBytes(rawResponseBytes, modelVisibleResponseBytes));
 
+    public static int CombineRetainedBytes(
+        int exchangeBytes,
+        int assessmentFailureBytes,
+        int maximumBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(exchangeBytes);
+        ArgumentOutOfRangeException.ThrowIfNegative(assessmentFailureBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
+        var total = checked(exchangeBytes + assessmentFailureBytes);
+        if (total > maximumBytes)
+        {
+            throw new InvalidOperationException(
+                "Retained exchange and assessment-failure evidence exceeded the artifact budget.");
+        }
+
+        return total;
+    }
+
     private static int ExchangeBytes(int rawResponseBytes, int modelVisibleResponseBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(rawResponseBytes);
