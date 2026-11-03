@@ -215,12 +215,13 @@ public static class SamplerUseCases
     }
 
     public static async Task<DiagnosticResult<AllocationSample>> CollectAllocationSample(
-        EventPipeAllocationSampler sampler,
+        IAllocationSampler sampler,
         IDiagnosticHandleStore handles,
         IProcessContextResolver resolver,
         int? processId = null,
         int durationSeconds = 10,
         int topN = 25,
+        int callTreeMaxNodes = 200,
         CancellationToken cancellationToken = default)
     {
         if (durationSeconds < 1) return InvalidArg<AllocationSample>(nameof(durationSeconds), "must be >= 1");
@@ -236,21 +237,30 @@ public static class SamplerUseCases
         {
             result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return WithContext(
+                new DiagnosticResult<AllocationSample>(
+                    $"Allocation sampling was cancelled by the client after starting against pid {pid}. No sample was retained.",
+                    Array.Empty<NextActionHint>())
+                {
+                    Cancelled = true,
+                },
+                ctx);
+        }
         catch (SampleLimitExceededException ex)
         {
-            return DiagnosticResult.Fail<AllocationSample>(
-                ex.Message,
-                new DiagnosticError("ResourceLimitExceeded", ex.Message, ex.GetType().FullName),
-                new NextActionHint("collect_sample", "Retry explicitly with a shorter allocation window or a narrower workload.",
-                    new Dictionary<string, object?> { ["kind"] = "allocation", ["processId"] = pid, ["durationSeconds"] = 1 }));
+            return WithContext(
+                DiagnosticResult.Fail<AllocationSample>(
+                    ex.Message,
+                    new DiagnosticError("ResourceLimitExceeded", ex.Message, "allocation.capture.limit"),
+                    new NextActionHint("collect_sample", "Retry explicitly with a shorter allocation window or a narrower workload.",
+                        new Dictionary<string, object?> { ["kind"] = "allocation", ["processId"] = pid, ["durationSeconds"] = 1 })),
+                ctx);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex)
         {
-            return DiagnosticResult.Fail<AllocationSample>(
-                ex.Message,
-                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
-                new NextActionHint("inspect_process", "Check capability matrix to confirm what's available for this process.",
-                    new Dictionary<string, object?> { ["processId"] = pid }));
+            return WithContext(AllocationSampleFailureClassifier.Classify(pid, ex), ctx);
         }
 
         var sample = result.Summary;
@@ -291,7 +301,7 @@ public static class SamplerUseCases
             handle.Id,
             handle.ExpiresAt,
             new NextActionHint("query_snapshot", "Walk the merged allocation call-site tree to find which code paths are allocating the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = 200 })
+                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = 8, ["maxNodes"] = callTreeMaxNodes })
             { Priority = NextActionHintPriority.High },
             new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
                 new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),

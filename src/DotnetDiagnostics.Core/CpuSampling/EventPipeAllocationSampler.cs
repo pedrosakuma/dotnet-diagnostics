@@ -12,6 +12,26 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotnetDiagnostics.Core.CpuSampling;
 
+public interface IAllocationSampler
+{
+    Task<AllocationSampleResult> SampleAsync(
+        int processId,
+        TimeSpan duration,
+        int topN = 25,
+        CancellationToken cancellationToken = default);
+}
+
+internal sealed class AllocationSampleOperationException(
+    string operation,
+    bool targetExited,
+    Exception innerException)
+    : Exception($"Allocation sample operation '{operation}' failed.", innerException)
+{
+    public string Operation { get; } = operation;
+
+    public bool TargetExited { get; } = targetExited;
+}
+
 /// <summary>
 /// Collects allocation samples by writing a <c>.nettrace</c> to disk then parsing it
 /// via <see cref="TraceLog"/>. Uses <c>GCAllocationTick</c> events from
@@ -36,7 +56,7 @@ namespace DotnetDiagnostics.Core.CpuSampling;
 /// <para>The sampling rate is inherent to the GC (~one tick per 100 KB of total allocations);
 /// it is not tunable via EventPipe parameters.</para>
 /// </remarks>
-public sealed class EventPipeAllocationSampler
+public sealed class EventPipeAllocationSampler : IAllocationSampler
 {
     internal const long MaxTraceBytes = 64L * 1024 * 1024;
     internal const int MaxAllocationEvents = 100_000;
@@ -84,11 +104,43 @@ public sealed class EventPipeAllocationSampler
         var tracePath = Path.Combine(Path.GetTempPath(), $"diagnosticsmcp-alloc-{processId}-{Guid.NewGuid():N}.nettrace");
         var startedAt = DateTimeOffset.UtcNow;
         var observationSink = CaptureRecordingContext.Current;
+        var targetStartedAt = ProcessLifetime.TryReadStart(processId);
 
         try
         {
-            await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
-            return Aggregate(tracePath, processId, startedAt, duration, topN, observationSink, cancellationToken);
+            try
+            {
+                await CollectTraceAsync(processId, tracePath, duration, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (SampleLimitExceededException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw WrapFailure("allocation.eventpipe.session", processId, targetStartedAt, ex);
+            }
+
+            try
+            {
+                return Aggregate(tracePath, processId, startedAt, duration, topN, observationSink, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (SampleLimitExceededException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw WrapFailure("allocation.trace.aggregate", processId, targetStartedAt, ex);
+            }
         }
         finally
         {
@@ -121,10 +173,22 @@ public sealed class EventPipeAllocationSampler
                 GcKeyword | (long)ClrTraceEventParser.Keywords.Default),
         };
 
-        var client = new DiagnosticsClient(pid);
-        var session = await client
-            .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 256, TimeSpan.FromSeconds(30), ct)
-            .ConfigureAwait(false);
+        EventPipeSession session;
+        try
+        {
+            var client = new DiagnosticsClient(pid);
+            session = await client
+                .StartEventPipeSessionWithTimeoutAsync(providers, requestRundown: true, circularBufferMB: 256, TimeSpan.FromSeconds(30), ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new AllocationSampleOperationException("allocation.eventpipe.start", targetExited: false, ex);
+        }
 
         var copyTask = Task.Run(async () =>
         {
@@ -135,9 +199,20 @@ public sealed class EventPipeAllocationSampler
         try
         {
             var delay = Task.Delay(duration, ct);
-            await Task.WhenAny(delay, copyTask).ConfigureAwait(false);
-            if (copyTask.IsCompleted) await copyTask.ConfigureAwait(false);
-            else await delay.ConfigureAwait(false);
+            var completed = await Task.WhenAny(delay, copyTask).ConfigureAwait(false);
+            if (completed == copyTask)
+            {
+                await copyTask.ConfigureAwait(false);
+                if (!delay.IsCompleted)
+                {
+                    throw new InvalidOperationException(
+                        "The allocation EventPipe stream ended before the requested capture window completed.");
+                }
+            }
+            else
+            {
+                await delay.ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -148,6 +223,23 @@ public sealed class EventPipeAllocationSampler
                 propagateProcessingErrors: true)
                 .ConfigureAwait(false);
         }
+    }
+
+    private static AllocationSampleOperationException WrapFailure(
+        string fallbackOperation,
+        int processId,
+        DateTimeOffset? targetStartedAt,
+        Exception exception)
+    {
+        var operation = exception is AllocationSampleOperationException staged
+            ? staged.Operation
+            : fallbackOperation;
+        var cause = exception is AllocationSampleOperationException { InnerException: { } inner }
+            ? inner
+            : exception;
+        var targetExited = targetStartedAt is not null
+                           && ProcessLifetime.TryReadStart(processId) != targetStartedAt;
+        return new AllocationSampleOperationException(operation, targetExited, cause);
     }
 
     internal static async Task CopyBoundedTraceAsync(Stream input, Stream output, CancellationToken ct)

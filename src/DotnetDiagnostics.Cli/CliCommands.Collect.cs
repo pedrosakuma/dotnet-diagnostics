@@ -424,7 +424,7 @@ internal static partial class CliCommands
             options.Pid,
             options.DurationSeconds ?? 10,
             options.Top ?? 25,
-            cancellationToken).ConfigureAwait(false));
+            cancellationToken: cancellationToken).ConfigureAwait(false));
 
     private static async Task<CliCommandResult> CollectOffCpuSampleAsync(
         IServiceProvider services,
