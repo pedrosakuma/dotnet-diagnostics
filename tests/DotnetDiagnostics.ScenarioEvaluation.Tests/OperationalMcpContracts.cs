@@ -325,6 +325,8 @@ public sealed record OperationalAutomatedAssessment(
 
     public int RetainedArtifactBytes { get; init; }
 
+    public bool ClaimTextAliasNormalized { get; init; }
+
     public int UnsupportedCertaintyCount => UnsupportedCertaintyFindings.Count;
 }
 
@@ -341,6 +343,8 @@ public sealed record OperationalMcpPreflightReport(
     public OperationalAssessmentFailureEvidence? FailureEvidence { get; init; }
 
     public int RetainedArtifactBytes { get; init; }
+
+    public bool ClaimTextAliasNormalized { get; init; }
 }
 
 public sealed record OperationalMcpRunReport(

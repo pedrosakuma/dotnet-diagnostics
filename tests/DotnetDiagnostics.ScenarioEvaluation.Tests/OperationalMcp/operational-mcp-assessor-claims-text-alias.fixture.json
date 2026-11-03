@@ -1,0 +1,370 @@
+{
+  "cases": [
+    {
+      "id": "canonical-only",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "Synthetic canonical rationale."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "passed",
+      "expectedRationale": "Synthetic canonical rationale.",
+      "expectedAliasNormalized": false
+    },
+    {
+      "id": "protocol8-heldout-spearman-degraded-alias-only",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "text": "Synthetic Protocol 8 claim assessment."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "passed",
+      "expectedRationale": "Synthetic Protocol 8 claim assessment.",
+      "expectedAliasNormalized": true
+    },
+    {
+      "id": "dual-identical-prefers-canonical",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "Synthetic identical rationale.",
+            "text": "Synthetic identical rationale."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "passed",
+      "expectedRationale": "Synthetic identical rationale.",
+      "expectedAliasNormalized": false
+    },
+    {
+      "id": "dual-conflicting",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "private-canonical-content",
+            "text": "private-alias-content"
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "ContradictoryValue",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "String",
+      "expectedDetail": "Assessment claim text properties '$.claims[0].rationale' (String) and '$.claims[0].text' (String) must be identical when both are present."
+    },
+    {
+      "id": "claim-text-missing",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported"
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "MissingProperty",
+      "expectedPath": "$.claims[0].rationale",
+      "expectedProperty": "rationale",
+      "expectedValueKind": "Undefined",
+      "expectedDetail": "Assessment field 'rationale' was missing."
+    },
+    {
+      "id": "root-text-remains-unexpected",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "Synthetic rationale."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary.",
+        "text": "private-root-content"
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "UnexpectedProperty",
+      "expectedPath": "$.text",
+      "expectedProperty": "text",
+      "expectedValueKind": "String",
+      "expectedDetail": "Unexpected assessment property 'text' at '$.text' with value kind String."
+    },
+    {
+      "id": "finding-text-remains-unexpected",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "Synthetic rationale."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [
+          {
+            "claimIndex": 0,
+            "category": "exactness",
+            "rationale": "Synthetic finding.",
+            "text": "private-finding-content"
+          }
+        ],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "UnexpectedProperty",
+      "expectedPath": "$.unsupportedCertaintyFindings[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "String",
+      "expectedDetail": "Unexpected assessment property 'text' at '$.unsupportedCertaintyFindings[0].text' with value kind String."
+    },
+    {
+      "id": "alias-null",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "text": null
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValueKind",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "Null",
+      "expectedDetail": "Assessment claim text alias at '$.claims[0].text' must be a non-empty string; observed value kind Null."
+    },
+    {
+      "id": "alias-array",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "text": [
+              "private-array-content"
+            ]
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValueKind",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "Array",
+      "expectedDetail": "Assessment claim text alias at '$.claims[0].text' must be a non-empty string; observed value kind Array."
+    },
+    {
+      "id": "alias-object",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "text": {
+              "value": "private-object-content"
+            }
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValueKind",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "Object",
+      "expectedDetail": "Assessment claim text alias at '$.claims[0].text' must be a non-empty string; observed value kind Object."
+    },
+    {
+      "id": "alias-number",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "text": 1
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValueKind",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "Number",
+      "expectedDetail": "Assessment claim text alias at '$.claims[0].text' must be a non-empty string; observed value kind Number."
+    },
+    {
+      "id": "alias-boolean",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "text": true
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValueKind",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "True",
+      "expectedDetail": "Assessment claim text alias at '$.claims[0].text' must be a non-empty string; observed value kind True."
+    },
+    {
+      "id": "alias-empty",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "text": ""
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValue",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "String",
+      "expectedDetail": "Assessment claim text alias at '$.claims[0].text' must be non-empty; observed value kind String."
+    },
+    {
+      "id": "dual-alias-invalid",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "Synthetic canonical rationale.",
+            "text": 1
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValueKind",
+      "expectedPath": "$.claims[0].text",
+      "expectedProperty": "text",
+      "expectedValueKind": "Number",
+      "expectedDetail": "Assessment claim text alias at '$.claims[0].text' must be a non-empty string; observed value kind Number."
+    },
+    {
+      "id": "dual-canonical-invalid",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": null,
+            "text": "Synthetic alias rationale."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "Synthetic uncertainty.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Synthetic summary."
+      },
+      "expectedStatus": "failed",
+      "expectedCategory": "InvalidValueKind",
+      "expectedPath": "$.claims[0].rationale",
+      "expectedProperty": "rationale",
+      "expectedValueKind": "Null",
+      "expectedDetail": "Assessment field 'rationale' must be a non-empty string."
+    }
+  ]
+}

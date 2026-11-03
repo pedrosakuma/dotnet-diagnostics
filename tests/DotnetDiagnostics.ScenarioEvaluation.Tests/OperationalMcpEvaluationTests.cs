@@ -463,6 +463,166 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
+    public async Task Assessor_ClaimsTextAliasUsesStrictBoundedNormalization()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-assessor-claims-text-alias.fixture.json");
+        using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
+
+        foreach (var testCase in fixture.RootElement.GetProperty("cases").EnumerateArray())
+        {
+            var response = testCase.GetProperty("response").GetRawText();
+            var context = new OperationalAssessmentEvidenceContext(
+                protocol.ProtocolId,
+                OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                $"fixture/{testCase.GetProperty("id").GetString()}",
+                OperationalMcpAssessor.MaximumFailureEvidenceBytes);
+            var assessment = await OperationalMcpAssessor.AssessAsync(
+                protocol.Cases[0],
+                CreateInvestigation(),
+                ModelConfiguration(),
+                new SingleTurnTransport(new AgentModelTurn(
+                    response,
+                    response,
+                    [],
+                    new AgentModelUsage(null, null, null),
+                    null)),
+                maximumWallTimeSeconds: 5,
+                maximumInputBytes: 32_768,
+                maximumTransportOutputBytes: 131_072,
+                protocol.AssessorAdditiveProperties,
+                context,
+                CancellationToken.None);
+            var caseId = testCase.GetProperty("id").GetString();
+            var expectedStatus = testCase.GetProperty("expectedStatus").GetString();
+
+            if (expectedStatus == "passed")
+            {
+                assessment.Stage.Status.Should().Be(
+                    AgentHarnessStageStatus.Passed,
+                    caseId);
+                assessment.Claims.Should().ContainSingle()
+                    .Which.Rationale.Should().Be(
+                        testCase.GetProperty("expectedRationale").GetString());
+                assessment.ClaimTextAliasNormalized.Should().Be(
+                    testCase.GetProperty("expectedAliasNormalized").GetBoolean());
+                assessment.FailureEvidence.Should().BeNull();
+                assessment.RetainedArtifactBytes.Should().Be(0);
+                continue;
+            }
+
+            assessment.Stage.Status.Should().Be(
+                AgentHarnessStageStatus.Failed,
+                caseId);
+            assessment.Stage.Detail.Should().Be(
+                testCase.GetProperty("expectedDetail").GetString(),
+                caseId);
+            assessment.ClaimTextAliasNormalized.Should().BeFalse();
+            assessment.FailureEvidence.Should().NotBeNull(caseId);
+            assessment.FailureEvidence!.Category.ToString().Should().Be(
+                testCase.GetProperty("expectedCategory").GetString(),
+                caseId);
+            assessment.FailureEvidence.JsonPath.Should().Be(
+                testCase.GetProperty("expectedPath").GetString(),
+                caseId);
+            assessment.FailureEvidence.PropertyName.Should().Be(
+                testCase.GetProperty("expectedProperty").GetString(),
+                caseId);
+            assessment.FailureEvidence.ValueKind.Should().Be(
+                testCase.GetProperty("expectedValueKind").GetString(),
+                caseId);
+            assessment.FailureEvidence.ProtocolId.Should().Be(protocol.ProtocolId);
+            assessment.FailureEvidence.ProtocolFingerprint.Should().Be(
+                OperationalMcpProtocolLoader.ProtocolFingerprint(protocol));
+            assessment.FailureEvidence.AttemptId.Should().Be(
+                $"fixture/{caseId}");
+            assessment.FailureEvidence.RawResponseSha256.Should().HaveLength(64);
+            assessment.FailureEvidence.RawResponseBytes.Should().Be(
+                System.Text.Encoding.UTF8.GetByteCount(response));
+            assessment.FailureEvidence.AssistantContentSha256.Should().HaveLength(64);
+            assessment.FailureEvidence.AssistantContentBytes.Should().Be(
+                System.Text.Encoding.UTF8.GetByteCount(response));
+            assessment.FailureEvidence.Redacted.Should().BeTrue();
+            assessment.FailureEvidence.Truncated.Should().BeFalse();
+            assessment.FailureEvidence.ReplayJson.Should().NotContain(
+                "private-",
+                caseId);
+            assessment.FailureEvidence.RetainedBytes.Should().Be(
+                System.Text.Encoding.UTF8.GetByteCount(
+                    assessment.FailureEvidence.ReplayJson!),
+                caseId);
+            assessment.RetainedArtifactBytes.Should().Be(
+                assessment.FailureEvidence.RetainedBytes,
+                caseId);
+
+            var replayJson = assessment.FailureEvidence.ReplayJson!;
+            var replay = await OperationalMcpAssessor.AssessAsync(
+                protocol.Cases[0],
+                CreateInvestigation(),
+                ModelConfiguration(),
+                new SingleTurnTransport(new AgentModelTurn(
+                    replayJson,
+                    replayJson,
+                    [],
+                    new AgentModelUsage(null, null, null),
+                    null)),
+                maximumWallTimeSeconds: 5,
+                maximumInputBytes: 32_768,
+                maximumTransportOutputBytes: 131_072,
+                protocol.AssessorAdditiveProperties,
+                context,
+                CancellationToken.None);
+
+            replay.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed, caseId);
+            replay.FailureEvidence.Should().NotBeNull(caseId);
+            replay.FailureEvidence!.Category.Should().Be(
+                assessment.FailureEvidence.Category,
+                caseId);
+            replay.FailureEvidence.JsonPath.Should().Be(
+                assessment.FailureEvidence.JsonPath,
+                caseId);
+            replay.FailureEvidence.PropertyName.Should().Be(
+                assessment.FailureEvidence.PropertyName,
+                caseId);
+            replay.FailureEvidence.ValueKind.Should().Be(
+                assessment.FailureEvidence.ValueKind,
+                caseId);
+        }
+    }
+
+    [Fact]
+    public async Task AssessorPreflight_RecordsClaimTextAliasNormalization()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        const string response =
+            """
+            {"claims":[{"index":0,"support":"supported","text":"Synthetic alias rationale."}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Synthetic summary."}
+            """;
+
+        var preflight = await OperationalMcpAssessor.PreflightAsync(
+            ModelConfiguration(),
+            new SingleTurnTransport(new AgentModelTurn(
+                response,
+                response,
+                [],
+                new AgentModelUsage(null, null, null),
+                null)),
+            maximumWallTimeSeconds: 5,
+            maximumInputBytes: 32_768,
+            maximumTransportOutputBytes: 8_192,
+            protocol.AssessorAdditiveProperties,
+            CancellationToken.None);
+
+        preflight.Stage.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        preflight.ClaimTextAliasNormalized.Should().BeTrue();
+        preflight.FailureEvidence.Should().BeNull();
+        preflight.RetainedArtifactBytes.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Assessor_UnexpectedPropertyRetainsBoundedRedactedReplayEvidence()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
@@ -473,7 +633,10 @@ public sealed class OperationalMcpProtocolTests
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
         var cases = fixture.RootElement.GetProperty("cases")
             .EnumerateArray()
-            .Where(testCase => testCase.TryGetProperty("expectedPath", out _))
+            .Where(testCase =>
+                testCase.TryGetProperty("expectedPath", out _)
+                && testCase.GetProperty("id").GetString()
+                    != "unreconstructable-protocol7-nested-text-equivalent")
             .ToArray();
 
         foreach (var testCase in cases)
@@ -543,7 +706,9 @@ public sealed class OperationalMcpProtocolTests
         var failedCases = fixture.RootElement.GetProperty("cases")
             .EnumerateArray()
             .Where(testCase =>
-                testCase.GetProperty("expectedStatus").GetString() == "failed")
+                testCase.GetProperty("expectedStatus").GetString() == "failed"
+                && testCase.GetProperty("id").GetString()
+                    != "unreconstructable-protocol7-nested-text-equivalent")
             .ToArray();
 
         foreach (var testCase in failedCases)
@@ -712,6 +877,12 @@ public sealed class OperationalMcpProtocolTests
 
         foreach (var testCase in fixture.RootElement.GetProperty("cases").EnumerateArray())
         {
+            if (testCase.GetProperty("id").GetString()
+                == "unreconstructable-protocol7-nested-text-equivalent")
+            {
+                continue;
+            }
+
             var response = testCase.GetProperty("response").GetRawText();
             var preflight = await OperationalMcpAssessor.PreflightAsync(
                 ModelConfiguration(),
