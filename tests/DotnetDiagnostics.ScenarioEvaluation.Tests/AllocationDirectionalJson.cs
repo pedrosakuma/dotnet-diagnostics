@@ -54,5 +54,8 @@ public static class AllocationDirectionalJson
     }
 
     public static string SerializeReport(AllocationDirectionalStudyReport report)
-        => JsonSerializer.Serialize(report, Options);
+    {
+        AllocationDirectionalHarness.ValidateReport(report);
+        return JsonSerializer.Serialize(report, Options);
+    }
 }

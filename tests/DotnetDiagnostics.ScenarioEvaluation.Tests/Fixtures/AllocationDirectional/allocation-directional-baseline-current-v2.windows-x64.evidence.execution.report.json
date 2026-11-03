@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-directional-baseline-current",
+  "protocolVersion": "2.0.0",
+  "decision": "noGo",
+  "aaMaximumAbsoluteEstimatedBytesPerOperationRelativeDelta": 0.0000837209060677439750838968,
+  "aaMaximumTypeShareMovement": 0.0000588203450690846708199332,
+  "aaMaximumSiteShareMovement": 0.0000556687537287418495945207,
+  "numericGatePassed": false,
+  "blindedEvaluationRequired": false,
+  "scenarios": [
+    {
+      "scenario": "trueIncrease",
+      "attemptedPairs": 6,
+      "validPairs": 0,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The intended equal-work increase was incomplete, overlapped its workload-specific A/A envelope, or had excessive A/A variability."
+      ]
+    },
+    {
+      "scenario": "mixShiftStableTotal",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The equal-payload mix shift changed both independent leading inventories in absolute estimated bytes per operation and share while normalized total stayed inside workload-specific A/A."
+      ]
+    },
+    {
+      "scenario": "throughputIncreaseStablePerOperation",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": true,
+      "findings": [
+        "Throughput normalization did not remain inside the A/A envelope."
+      ]
+    },
+    {
+      "scenario": "lowerAllocationStableRetained",
+      "attemptedPairs": 6,
+      "validPairs": 3,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The lower-allocation control was incomplete, did not preserve retained bytes, overlapped A/A, or had excessive A/A variability."
+      ]
+    },
+    {
+      "scenario": "warmupTransientConverges",
+      "attemptedPairs": 9,
+      "validPairs": 9,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": true,
+      "findings": [
+        "The transient control was incomplete, had excessive A/A variability, or did not show the frozen early-then-converged shape."
+      ]
+    },
+    {
+      "scenario": "changedWorkload",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Every changed-workload pair was rejected by identity compatibility before directional interpretation."
+      ]
+    },
+    {
+      "scenario": "fixedStrideBias",
+      "attemptedPairs": 6,
+      "validPairs": 0,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Equal-payload reorderings stayed within the workload-specific A/A absolute and share envelopes."
+      ]
+    },
+    {
+      "scenario": "partialAttribution",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Partial attribution did not preserve independent per-level availability."
+      ]
+    },
+    {
+      "scenario": "missingOrZeroWeight",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Missing or zero-weight evidence produced abstention and remained in the denominator."
+      ]
+    },
+    {
+      "scenario": "healthyAa",
+      "attemptedPairs": 3,
+      "validPairs": 3,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The three valid A/A pairs define provenance-only variability envelopes."
+      ]
+    }
+  ],
+  "limitations": [
+    "Measurement quality is used only for internal compatibility, availability, and abstention gates; it is not a model-visible field or diagnostic headline.",
+    "GCAllocationTick estimated bytes are sampled weights, not exact allocation totals, retained bytes, object counts, severity, health, regression, or causality.",
+    "Each live side is a separately started process. Failed and aborted sides remain in pair denominators and are never retried or replaced.",
+    "Allocated types and allocation sites are independent inventories; no type-to-site relationship is inferred.",
+    "The numeric gate did not authorize blinded evaluation."
+  ],
+  "blindedEvaluationRan": false
+}

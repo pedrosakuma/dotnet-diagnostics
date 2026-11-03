@@ -9,6 +9,10 @@ public sealed class AllocationDirectionalTests
         "Fixtures",
         "AllocationDirectional",
         "allocation-directional-baseline-current-v1.windows-x64.evidence.json");
+    private static readonly string EmpiricalV2FixturePath = ScenarioManifestLoader.ScenarioPath(
+        "Fixtures",
+        "AllocationDirectional",
+        "allocation-directional-baseline-current-v2.windows-x64.evidence.json");
     private static readonly string EmpiricalArtifactDirectory = RepositoryPath(
         "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional");
 
@@ -18,7 +22,7 @@ public sealed class AllocationDirectionalTests
         var path = ScenarioManifestLoader.ScenarioPath(
             "Fixtures",
             "AllocationDirectional",
-            "allocation-directional-baseline-current-v1.protocol.json");
+            "allocation-directional-baseline-current-v2.protocol.json");
         using var document = JsonDocument.Parse(File.ReadAllText(path));
         var root = document.RootElement;
 
@@ -40,6 +44,17 @@ public sealed class AllocationDirectionalTests
             sourceHashes.GetProperty(sourcePath).GetString().Should()
                 .MatchRegex("^[0-9a-f]{64}$");
         }
+        var runtimeHashes = frozenInputs.GetProperty("runtimeArtifactsSha256");
+        var runtimeHashValues = runtimeHashes.EnumerateObject()
+            .Select(property => property.Value.GetString())
+            .ToArray();
+        runtimeHashValues.Should().NotBeEmpty();
+        runtimeHashValues.All(hash =>
+                hash is not null
+                && System.Text.RegularExpressions.Regex.IsMatch(
+                    hash,
+                    "^[0-9a-f]{64}$"))
+            .Should().BeTrue();
         root.GetProperty("modelVisibleMeasurementQualityFields").GetArrayLength()
             .Should().Be(0);
         root.GetProperty("requiredIndependentPairs").GetInt32().Should().Be(
@@ -117,12 +132,80 @@ public sealed class AllocationDirectionalTests
     }
 
     [Fact]
-    public void FrozenProtocol_CannotBeRerunAfterHarnessCorrection()
+    public void OriginalProtocolAndEvidence_RemainByteForBytePreserved()
     {
-        var validate = AllocationDirectionalProtocol.ValidateFrozen;
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.protocol.json",
+            14_564,
+            "ef12d0f6caa48cc2e4be51317f19142094e3d3e8c75af5b8ffd4a7bc2610713a");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.execution.json",
+            65_282,
+            "06b917e17524f9f4b2ffb4ebfa0dd504327a49a2fa59b2fb8efc37df92bc7dfc");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.json",
+            65_727,
+            "c251312571df99ea1a4d2e5c10b53c8adf4a2347ea2a24b0ef67dedbde061c50");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.ledger.jsonl",
+            18_657,
+            "087402d4a6813092a4c3f250b34713ba8c2e263eb269cec207036daa7dcaa690");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.report.json",
+            483,
+            "12ec9b0ecf6f551111af899e50af6ce9e635f3be2a6b7b505dea3773e058e7c4");
+        AssertGitBlobFingerprint(
+            "allocation-directional-baseline-current-v1.protocol.json",
+            14_343,
+            "81df68ada1bdc1fb0952dce973719ad70560178da94e04a0cc213fe60237bb84");
+        AssertGitBlobFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.execution.json",
+            63_355,
+            "9e194b9b70af8b377125782a8fe1a081800b63641f6d0dcfb141d6cd53210147");
+        AssertGitBlobFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.json",
+            63_796,
+            "4c16cdd51877c044159c329ae20e59a04e0f487ce72d31586ba086df4c30d8c1");
+        AssertGitBlobFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.ledger.jsonl",
+            18_513,
+            "7aa8ae4c9b6ac7944776f64b276f9d09ebae436561ebc936aece02acc80a9a99");
+        AssertGitBlobFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.report.json",
+            469,
+            "c1c8d1e17b5953c43e654e368f5579a8af11cc0c546da08cb095c6e0dc7df03b");
+    }
 
-        validate.Should().Throw<InvalidDataException>()
-            .WithMessage("*Frozen source hash mismatch*");
+    [Fact]
+    public void BlindedEvaluation_CannotRunBeforeNumericGate()
+    {
+        var report = AllocationDirectionalHarness.Evaluate(SyntheticFixture());
+        var blocked = report with
+        {
+            NumericGatePassed = false,
+            BlindedEvaluationRequired = false,
+        };
+
+        var complete = () => AllocationDirectionalHarness.CompleteBlindedEvaluation(
+            blocked,
+            improvedSupportOrNextStepUsefulness: true,
+            increasedUnsupportedCertainty: false,
+            "blocked");
+
+        complete.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void Go_RequiresCompletedBlindedEvaluation()
+    {
+        var report = AllocationDirectionalHarness.Evaluate(SyntheticFixture()) with
+        {
+            Decision = AllocationDirectionalDecision.Go,
+        };
+
+        var serialize = () => AllocationDirectionalJson.SerializeReport(report);
+
+        serialize.Should().Throw<InvalidDataException>();
     }
 
     [Fact]
@@ -134,6 +217,8 @@ public sealed class AllocationDirectionalTests
         report.NumericGatePassed.Should().BeTrue();
         report.BlindedEvaluationRequired.Should().BeTrue();
         report.Scenarios.Should().OnlyContain(result =>
+            result.Assessable
+            &&
             result.ExpectedBehaviorObserved
             && !result.UnsafeDirectionalEvidenceObserved);
         report.Limitations.Should().Contain(item =>
@@ -146,6 +231,7 @@ public sealed class AllocationDirectionalTests
         var fixture = SyntheticFixture();
         var pairs = fixture.Pairs.Select(pair =>
             pair.Scenario == AllocationDirectionalScenario.FixedStrideBias
+                && pair.Current.Phase != "aa"
                 ? pair with
                 {
                     Current = pair.Current with
@@ -194,8 +280,9 @@ public sealed class AllocationDirectionalTests
             value.Scenario == AllocationDirectionalScenario.TrueIncrease);
 
         report.Decision.Should().Be(AllocationDirectionalDecision.Inconclusive);
-        result.AttemptedPairs.Should().Be(AllocationDirectionalBounds.RequiredPairs);
-        result.ValidPairs.Should().Be(AllocationDirectionalBounds.RequiredPairs - 1);
+        result.AttemptedPairs.Should().Be(AllocationDirectionalBounds.RequiredPairs * 2);
+        result.ValidPairs.Should().Be(
+            AllocationDirectionalBounds.RequiredPairs * 2 - 1);
     }
 
     [Fact]
@@ -250,62 +337,109 @@ public sealed class AllocationDirectionalTests
     public void EmpiricalFixture_PreservesInconclusiveDecisionAndEveryDenominator()
     {
         var fixture = AllocationDirectionalJson.ReadFixture(EmpiricalFixturePath);
-        var protocolPath = ScenarioManifestLoader.ScenarioPath(
-            "Fixtures",
-            "AllocationDirectional",
-            "allocation-directional-baseline-current-v1.protocol.json");
-
-        fixture.CanonicalProtocolSha256.Should().Be(
-            AllocationDirectionalProtocol.Sha256(protocolPath));
         fixture.ProvenanceCorrections.Should().ContainSingle(item =>
             item.Contains("checkout-independent", StringComparison.Ordinal));
-        fixture.Pairs.Should().HaveCount(AllocationDirectionalCapturePlan.TotalPairs);
+        fixture.Pairs.Should().HaveCount(39);
         var observations = fixture.Pairs.SelectMany(pair =>
             new[] { pair.Baseline, pair.Current }).ToArray();
         observations.Count(observation =>
                 observation.Origin == AllocationDirectionalOrigin.LiveMcp)
-            .Should().Be(AllocationDirectionalCapturePlan.LiveMcpSides);
+            .Should().Be(72);
         observations.Count(observation =>
                 observation.Origin == AllocationDirectionalOrigin.ControlledProjection)
-            .Should().Be(AllocationDirectionalCapturePlan.ControlledProjectionSides);
+            .Should().Be(6);
         observations.Where(observation =>
                 observation.Origin == AllocationDirectionalOrigin.LiveMcp)
             .Should().OnlyContain(observation =>
                 observation.Outcome == AllocationDirectionalAttemptOutcome.Failed);
 
-        var report = AllocationDirectionalHarness.Evaluate(fixture);
-
-        report.Decision.Should().Be(AllocationDirectionalDecision.Inconclusive);
-        report.NumericGatePassed.Should().BeFalse();
-        report.BlindedEvaluationRequired.Should().BeFalse();
-        report.Scenarios.Should().BeEmpty();
-        report.Limitations.Should().ContainSingle(item =>
-            item.Contains("Healthy A/A", StringComparison.Ordinal));
+        using var report = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            EmpiricalArtifactDirectory,
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.report.json")));
+        report.RootElement.GetProperty("decision").GetString().Should().Be("inconclusive");
+        report.RootElement.GetProperty("numericGatePassed").GetBoolean().Should().BeFalse();
     }
 
     [Fact]
-    public void EmpiricalArtifacts_HavePortableDocumentedFingerprints()
+    public void EmpiricalV2Fixture_PreservesEveryAttemptAndFinalInconclusiveGate()
+    {
+        var fixture = AllocationDirectionalJson.ReadFixture(EmpiricalV2FixturePath);
+        fixture.ProtocolVersion.Should().Be(AllocationDirectionalHarness.ProtocolVersion);
+        fixture.Pairs.Should().HaveCount(AllocationDirectionalCapturePlan.TotalPairs);
+        fixture.ProvenanceCorrections.Should().ContainSingle(item =>
+            item.Contains("decision rule", StringComparison.OrdinalIgnoreCase));
+        var observations = fixture.Pairs.SelectMany(pair =>
+            new[] { pair.Baseline, pair.Current }).ToArray();
+        var live = observations.Where(observation =>
+            observation.Origin == AllocationDirectionalOrigin.LiveMcp).ToArray();
+        live.Should().HaveCount(AllocationDirectionalCapturePlan.LiveMcpSides);
+        live.Count(observation =>
+                observation.Outcome == AllocationDirectionalAttemptOutcome.Passed)
+            .Should().Be(72);
+        live.Count(observation =>
+                observation.Outcome == AllocationDirectionalAttemptOutcome.Failed)
+            .Should().Be(24);
+        live.Where(observation =>
+                observation.Outcome == AllocationDirectionalAttemptOutcome.Failed)
+            .All(observation =>
+                observation.AttemptEvidence is not null
+                && observation.AttemptEvidence.FailureCategory
+                    == AllocationDirectionalFailureCategory.McpIsError
+                && observation.AttemptEvidence.ErrorKind == "PermissionDenied")
+            .Should().BeTrue();
+        live.Select(observation => observation.AttemptId)
+            .Should().OnlyHaveUniqueItems();
+        live.Select(observation => observation.CaptureId)
+            .Should().OnlyHaveUniqueItems();
+        live.Select(observation => observation.ProcessIdentity)
+            .Should().OnlyHaveUniqueItems();
+        live.All(observation => observation.QuantityEvidence is not null)
+            .Should().BeTrue();
+
+        var report = AllocationDirectionalHarness.Evaluate(fixture);
+        report.Decision.Should().Be(AllocationDirectionalDecision.Inconclusive);
+        report.NumericGatePassed.Should().BeFalse();
+        report.BlindedEvaluationRequired.Should().BeFalse();
+        report.BlindedEvaluationRan.Should().BeFalse();
+        report.Scenarios.Count(result => !result.Assessable).Should().Be(4);
+    }
+
+    [Fact]
+    public void EmpiricalV2Artifacts_HavePortableDocumentedFingerprints()
     {
         AssertFingerprint(
-            "allocation-directional-baseline-current-v1.protocol.json",
-            14_564,
-            "ef12d0f6caa48cc2e4be51317f19142094e3d3e8c75af5b8ffd4a7bc2610713a");
+            "allocation-directional-baseline-current-v2.protocol.json",
+            33_043,
+            "20af784db457c573ae0c3b7c5cb21ff5db99b94cd4cc6ea8567f899e60699d53");
         AssertFingerprint(
-            "allocation-directional-baseline-current-v1.windows-x64.evidence.execution.json",
-            65_282,
-            "06b917e17524f9f4b2ffb4ebfa0dd504327a49a2fa59b2fb8efc37df92bc7dfc");
+            "allocation-directional-baseline-current-v2.windows-x64.evidence.execution.json",
+            436_823,
+            "a29d43bddba2d955969c275a5e3f275d222cd947be6a7329b29626bfa48664fa");
         AssertFingerprint(
-            "allocation-directional-baseline-current-v1.windows-x64.evidence.json",
-            65_727,
-            "c251312571df99ea1a4d2e5c10b53c8adf4a2347ea2a24b0ef67dedbde061c50");
+            "allocation-directional-baseline-current-v2.windows-x64.evidence.execution.report.json",
+            4_657,
+            "cb2cf09c3044df97f0c904ebb0717c1cf63d2167078e46a1d6fa886a920d403a");
         AssertFingerprint(
-            "allocation-directional-baseline-current-v1.windows-x64.evidence.ledger.jsonl",
-            18_657,
-            "087402d4a6813092a4c3f250b34713ba8c2e263eb269cec207036daa7dcaa690");
+            "allocation-directional-baseline-current-v2.windows-x64.evidence.json",
+            437_408,
+            "d5c639412cf1e0ee446e1ed4018c4448ac672c6187b73134aa4ee5d3566b7a89");
         AssertFingerprint(
-            "allocation-directional-baseline-current-v1.windows-x64.evidence.report.json",
-            483,
-            "12ec9b0ecf6f551111af899e50af6ce9e635f3be2a6b7b505dea3773e058e7c4");
+            "allocation-directional-baseline-current-v2.windows-x64.evidence.ledger.jsonl",
+            64_106,
+            "d61e4526ffe456823c8a16c989d9500700dc0355a24b083a5c728133e9d266dd");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v2.windows-x64.evidence.report.json",
+            4_939,
+            "ebaf3f6c2ee3c8aa1ddbf457a6c7faa6a5dc56b7753d885a694bc6acc103570f");
+    }
+
+    [Fact]
+    public void PostExecutionDecisionParityCorrection_PreventsAnyRerun()
+    {
+        var validate = AllocationDirectionalProtocol.ValidateFrozen;
+
+        validate.Should().Throw<InvalidDataException>()
+            .WithMessage("*Frozen source hash mismatch*");
     }
 
     private static AllocationDirectionalFixture SyntheticFixture()
@@ -320,9 +454,31 @@ public sealed class AllocationDirectionalTests
                 Observation($"aa-c-{index}", 100, 10_200, "primary", "steady")));
             pairs.Add(Pair(
                 AllocationDirectionalScenario.TrueIncrease,
+                $"increase-aa-{index}",
+                Observation($"inc-aa-b-{index}", 100, 10_000, "volume", "steady"),
+                Observation($"inc-aa-c-{index}", 100, 10_100, "volume", "aa")));
+            pairs.Add(Pair(
+                AllocationDirectionalScenario.TrueIncrease,
                 $"increase-{index}",
                 Observation($"inc-b-{index}", 100, 10_000, "volume", "steady"),
-                Observation($"inc-c-{index}", 100, 20_000, "volume", "steady")));
+                Observation($"inc-c-{index}", 100, 20_000, "volume", "effect")));
+            pairs.Add(Pair(
+                AllocationDirectionalScenario.MixShiftStableTotal,
+                $"mix-aa-{index}",
+                Observation(
+                    $"mix-aa-b-{index}",
+                    100,
+                    10_000,
+                    "mix",
+                    "steady",
+                    payload: 1_000),
+                Observation(
+                    $"mix-aa-c-{index}",
+                    100,
+                    10_100,
+                    "mix",
+                    "aa",
+                    payload: 1_000)));
             pairs.Add(Pair(
                 AllocationDirectionalScenario.MixShiftStableTotal,
                 $"mix-{index}",
@@ -340,7 +496,7 @@ public sealed class AllocationDirectionalTests
                     100,
                     10_100,
                     "mix",
-                    "steady",
+                    "effect",
                     payload: 1_000,
                     types: [new("Int", 8_080, 8), new("Char", 2_020, 2)],
                     sites: [new("Changed", 8_080, 8), new("Shared", 2_020, 2)])));
@@ -353,12 +509,17 @@ public sealed class AllocationDirectionalTests
                 AllocationDirectionalScenario.ThroughputIncreaseStablePerOperation,
                 $"throughput-intensity-{index}",
                 Observation($"tp-b-{index}", 100, 10_000, "throughput", "steady", duration: 4),
-                Observation($"tp-c-{index}", 200, 20_200, "throughput", "intensity", duration: 4)));
+                Observation($"tp-c-{index}", 200, 20_200, "throughput", "effect", duration: 4)));
+            pairs.Add(Pair(
+                AllocationDirectionalScenario.LowerAllocationStableRetained,
+                $"lower-aa-{index}",
+                Observation($"low-aa-b-{index}", 100, 20_000, "retained", "steady", retained: 2_000),
+                Observation($"low-aa-c-{index}", 100, 20_200, "retained", "aa", retained: 2_000)));
             pairs.Add(Pair(
                 AllocationDirectionalScenario.LowerAllocationStableRetained,
                 $"lower-{index}",
                 Observation($"low-b-{index}", 100, 20_000, "retained", "steady", retained: 2_000),
-                Observation($"low-c-{index}", 100, 10_000, "retained", "steady", retained: 2_000)));
+                Observation($"low-c-{index}", 100, 10_000, "retained", "effect", retained: 2_000)));
             pairs.Add(Pair(
                 AllocationDirectionalScenario.ChangedWorkload,
                 $"changed-{index}",
@@ -373,7 +534,7 @@ public sealed class AllocationDirectionalTests
                 AllocationDirectionalScenario.FixedStrideBias,
                 $"stride-reorder-{index}",
                 Observation($"stride-rb-{index}", 100, 10_000, "stride", "steady"),
-                Observation($"stride-rc-{index}", 100, 10_100, "stride", "reorder")));
+                Observation($"stride-rc-{index}", 100, 10_100, "stride", "effect")));
             pairs.Add(Pair(
                 AllocationDirectionalScenario.PartialAttribution,
                 $"partial-{index}",
@@ -397,6 +558,11 @@ public sealed class AllocationDirectionalTests
                     "missing",
                     "steady",
                     workers: 0)));
+            pairs.Add(Pair(
+                AllocationDirectionalScenario.WarmupTransientConverges,
+                $"warmup-aa-{index}",
+                Observation($"warm-aa-b-{index}", 100, 10_000, "warmup", "steady"),
+                Observation($"warm-aa-c-{index}", 100, 10_100, "warmup", "aa")));
             pairs.Add(Pair(
                 AllocationDirectionalScenario.WarmupTransientConverges,
                 $"warmup-early-{index}",
@@ -446,6 +612,18 @@ public sealed class AllocationDirectionalTests
         var path = Path.Combine(EmpiricalArtifactDirectory, fileName);
         AllocationDirectionalProtocol.CanonicalByteCount(path).Should().Be(expectedBytes);
         AllocationDirectionalProtocol.Sha256(path).Should().Be(expectedSha256);
+    }
+
+    private static void AssertGitBlobFingerprint(
+        string fileName,
+        int expectedBytes,
+        string expectedSha256)
+    {
+        var relativePath =
+            $"tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/{fileName}";
+        var actual = AllocationDirectionalProtocol.GitBlobFingerprint(relativePath);
+        actual.ByteCount.Should().Be(expectedBytes);
+        actual.Sha256.Should().Be(expectedSha256);
     }
 
     private static AllocationDirectionalPair Pair(
