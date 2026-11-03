@@ -94,7 +94,57 @@ public sealed class BlindedAgentHarnessTests
             $"{report.AgentExecution.FailureKind}: {report.AgentExecution.Detail}");
         report.Assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
         report.Assessment.InvalidEvidenceLocations.Should().ContainSingle("tool-result://missing#/evidence");
+        report.Assessment.CitationDiagnostics.FailureCount.Should().Be(1);
+        report.Assessment.CitationDiagnostics.Failures.Should().ContainSingle()
+            .Which.Kind.Should().Be(AgentCitationFailureKind.UnavailableArtifact);
+        report.Assessment.CitationDiagnostics.Failures[0].ConsideredNamespace
+            .Should().Be("tool-result://missing#");
         report.Collection.Status.Should().Be(AgentHarnessStageStatus.NotRun);
+    }
+
+    [Fact]
+    public async Task Conversation_BoundsCitationFailureDiagnosticsWithoutChangingFailureCount()
+    {
+        var manifest = ScenarioManifestLoader.LoadAll().Single(value => value.Id == "gc-storm");
+        var locations = Enumerable.Range(0, 70)
+            .Select(index => $"tool-result://missing-{index}#/evidence")
+            .ToArray();
+        var response = new JsonObject
+        {
+            ["claims"] = new JsonArray(new JsonObject
+            {
+                ["text"] = "Synthetic claim.",
+                ["posture"] = "inferred",
+                ["evidenceLocations"] = new JsonArray(
+                    locations.Select(location => JsonValue.Create(location)).ToArray()),
+            }),
+            ["uncertainty"] = "Synthetic uncertainty.",
+            ["nextSteps"] = new JsonArray(),
+        }.ToJsonString();
+        var report = await BlindedAgentHarness.RunConversationAsync(
+            Request(manifest, "scripted"),
+            new ScriptedTransport(
+            [
+                new AgentModelTurn(
+                    response,
+                    response,
+                    [],
+                    new AgentModelUsage(null, null, null),
+                    null),
+            ]),
+            new FakeGateway(),
+            DateTimeOffset.UtcNow,
+            new AgentHarnessStage(
+                AgentHarnessStageStatus.Passed,
+                AgentHarnessFailureKind.None,
+                "test",
+                0),
+            CancellationToken.None);
+
+        report.Assessment.InvalidEvidenceLocations.Should().HaveCount(70);
+        report.Assessment.CitationDiagnostics.FailureCount.Should().Be(70);
+        report.Assessment.CitationDiagnostics.Failures.Should().HaveCount(64);
+        report.Assessment.CitationDiagnostics.FailuresTruncated.Should().BeTrue();
     }
 
     [Fact]

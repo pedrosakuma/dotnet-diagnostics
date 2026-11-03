@@ -27,8 +27,8 @@ internal static class OperationalMcpProtocolLoader
     ];
 
     public const int CurrentSchemaVersion = 7;
-    public const int CurrentRunSchemaVersion = 7;
-    public const int CurrentPilotSchemaVersion = 7;
+    public const int CurrentRunSchemaVersion = 8;
+    public const int CurrentPilotSchemaVersion = 8;
     internal const string FrozenProtocolVersion = "7.0.0";
     internal const string FrozenProtocolFingerprint =
         "100e1cba23022481b6323678ab6e75c53180b4a74af6326518db0dbc6532f044";

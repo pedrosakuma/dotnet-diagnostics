@@ -32,6 +32,31 @@ public enum AgentEvidencePosture
     Unknown,
 }
 
+public enum AgentCitationFailureKind
+{
+    InvalidLocation,
+    UnavailableArtifact,
+    OutsideRetainedEvidence,
+    InvalidRetainedArtifact,
+}
+
+public sealed record AgentCitationFailure(
+    string Location,
+    AgentCitationFailureKind Kind,
+    string Detail,
+    string ConsideredNamespace);
+
+public sealed record AgentCitationDiagnostics(
+    int FailureCount,
+    IReadOnlyList<AgentCitationFailure> Failures,
+    bool FailuresTruncated,
+    IReadOnlyList<string> RetainedEvidenceNamespaces,
+    bool NamespacesTruncated)
+{
+    public static AgentCitationDiagnostics Empty { get; } =
+        new(0, [], false, [], false);
+}
+
 public sealed record AgentHarnessBudget(
     int MaximumWallTimeSeconds = 45,
     int MaximumToolCalls = 4,
@@ -153,7 +178,11 @@ public sealed record AgentHarnessProvenance(
 public sealed record AgentHarnessAssessment(
     AgentHarnessStage Stage,
     IReadOnlyList<string> InvalidEvidenceLocations,
-    string Method);
+    string Method)
+{
+    public AgentCitationDiagnostics CitationDiagnostics { get; init; } =
+        AgentCitationDiagnostics.Empty;
+}
 
 public sealed record AgentHarnessReport(
     int SchemaVersion,

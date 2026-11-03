@@ -10,7 +10,10 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 public static class BlindedAgentHarness
 {
-    public const int CurrentReportSchemaVersion = 3;
+    public const int CurrentReportSchemaVersion = 4;
+    private const int MaximumCitationFailureDiagnostics = 64;
+    private const int MaximumCitationNamespaces = 16;
+    private const int MaximumCitationDiagnosticTextLength = 512;
     private static readonly JsonSerializerOptions ReportJsonOptions = CreateReportJsonOptions();
     private const string SystemPrompt =
         """
@@ -632,24 +635,36 @@ public static class BlindedAgentHarness
         }
 
         executionWatch.Stop();
-        var invalidCitations = diagnosis is null
+        var citationResolutions = diagnosis is null
             ? []
             : FindInvalidEvidenceLocations(diagnosis, transcript);
+        var invalidCitations = citationResolutions
+            .Select(resolution => resolution.Location)
+            .ToArray();
+        var citationDiagnostics = diagnosis is null
+            ? AgentCitationDiagnostics.Empty
+            : CreateCitationDiagnostics(citationResolutions, transcript);
         var assessment = diagnosis is null
             ? new AgentHarnessAssessment(
                 Stage(AgentHarnessStageStatus.NotRun, AgentHarnessFailureKind.None, "No diagnosis was available to assess.", TimeSpan.Zero),
                 [],
                 "citation-resolution-only")
+            {
+                CitationDiagnostics = citationDiagnostics,
+            }
             : new AgentHarnessAssessment(
                 Stage(
-                    invalidCitations.Count == 0 ? AgentHarnessStageStatus.Passed : AgentHarnessStageStatus.Failed,
-                    invalidCitations.Count == 0 ? AgentHarnessFailureKind.None : AgentHarnessFailureKind.Assessment,
-                    invalidCitations.Count == 0
+                    invalidCitations.Length == 0 ? AgentHarnessStageStatus.Passed : AgentHarnessStageStatus.Failed,
+                    invalidCitations.Length == 0 ? AgentHarnessFailureKind.None : AgentHarnessFailureKind.Assessment,
+                    invalidCitations.Length == 0
                         ? "Every cited location resolved to retained tool evidence. Diagnostic quality remains advisory."
-                        : $"{invalidCitations.Count} evidence location(s) did not resolve.",
+                        : $"{invalidCitations.Length} evidence location(s) did not resolve.",
                     TimeSpan.Zero),
                 invalidCitations,
-                "citation-resolution-only; no claim-correctness judgment");
+                "citation-resolution-only; no claim-correctness judgment")
+            {
+                CitationDiagnostics = citationDiagnostics,
+            };
         var toolResults = transcript.SelectMany(turn => turn.ToolResults).ToArray();
         var collectionStage = toolResults.Length == 0
             ? Stage(
@@ -857,22 +872,62 @@ public static class BlindedAgentHarness
                 .ToArray());
     }
 
-    private static List<string> FindInvalidEvidenceLocations(
+    private static List<AgentEvidenceResolution> FindInvalidEvidenceLocations(
         AgentDiagnosis diagnosis,
         IReadOnlyList<AgentTranscriptTurn> transcript)
     {
         var results = transcript.SelectMany(turn => turn.ToolResults).ToArray();
-        var invalid = new List<string>();
+        var invalid = new List<AgentEvidenceResolution>();
         foreach (var location in diagnosis.Claims.SelectMany(claim => claim.EvidenceLocations).Distinct(StringComparer.Ordinal))
         {
-            if (!AgentEvidenceResolver.Resolve(location, results).Exists)
+            var resolution = AgentEvidenceResolver.Resolve(location, results);
+            if (!resolution.Exists)
             {
-                invalid.Add(location);
+                invalid.Add(resolution);
             }
         }
 
         return invalid;
     }
+
+    private static AgentCitationDiagnostics CreateCitationDiagnostics(
+        List<AgentEvidenceResolution> failures,
+        IReadOnlyList<AgentTranscriptTurn> transcript)
+    {
+        var namespaces = transcript
+            .SelectMany(turn => turn.ToolResults)
+            .Select(result => $"tool-result://{result.ToolCallId}#")
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return new AgentCitationDiagnostics(
+            failures.Count,
+            failures
+                .Take(MaximumCitationFailureDiagnostics)
+                .Select(failure => new AgentCitationFailure(
+                    DiagnosticText(failure.Location),
+                    failure.FailureKind
+                        ?? throw new InvalidOperationException(
+                            "An unresolved citation must have a failure kind."),
+                    DiagnosticText(
+                        failure.Error
+                        ?? throw new InvalidOperationException(
+                            "An unresolved citation must have an error.")),
+                    DiagnosticText(failure.ConsideredNamespace)))
+                .ToArray(),
+            failures.Count > MaximumCitationFailureDiagnostics,
+            namespaces
+                .Take(MaximumCitationNamespaces)
+                .Select(DiagnosticText)
+                .ToArray(),
+            namespaces.Length > MaximumCitationNamespaces);
+    }
+
+    private static string DiagnosticText(string value)
+        => value.Length <= MaximumCitationDiagnosticTextLength
+            ? value
+            : string.Concat(
+                value.AsSpan(0, MaximumCitationDiagnosticTextLength - 3),
+                "...");
 
     private static AgentHarnessProvenance Provenance(
         AgentHarnessRequest request,

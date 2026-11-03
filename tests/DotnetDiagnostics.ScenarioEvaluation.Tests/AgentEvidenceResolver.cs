@@ -7,11 +7,16 @@ internal sealed record AgentEvidenceResolution(
     string Location,
     bool Exists,
     JsonElement? Value,
-    string? Error);
+    string? Error,
+    AgentCitationFailureKind? FailureKind,
+    string ConsideredNamespace,
+    string Syntax);
 
 internal static class AgentEvidenceResolver
 {
     private const string Prefix = "tool-result://";
+    private const string DirectSyntax = "direct-json-pointer";
+    private const string CopilotCliEnvelopeSyntax = "copilot-cli-json-envelope";
 
     public static AgentEvidenceResolution Resolve(
         string location,
@@ -22,19 +27,35 @@ internal static class AgentEvidenceResolver
         if (!location.StartsWith(Prefix, StringComparison.Ordinal)
             || hashIndex <= Prefix.Length)
         {
-            return Missing(location, "The location must use tool-result://<call-id>#<json-pointer>.");
+            return Missing(
+                location,
+                AgentCitationFailureKind.InvalidLocation,
+                "The location must use tool-result://<call-id>#<json-pointer>.",
+                "tool-result://<call-id>#",
+                DirectSyntax);
         }
 
         var callId = location[Prefix.Length..hashIndex];
+        var evidenceNamespace = $"{Prefix}{callId}#";
         var matches = results.Where(result => result.ToolCallId == callId).ToArray();
         if (matches.Length == 0)
         {
-            return Missing(location, $"Tool call id '{callId}' was not found.");
+            return Missing(
+                location,
+                AgentCitationFailureKind.UnavailableArtifact,
+                $"Tool call id '{callId}' was not found.",
+                evidenceNamespace,
+                DirectSyntax);
         }
 
         if (matches.Length != 1)
         {
-            return Missing(location, $"Tool call id '{callId}' is ambiguous.");
+            return Missing(
+                location,
+                AgentCitationFailureKind.UnavailableArtifact,
+                $"Tool call id '{callId}' is ambiguous.",
+                evidenceNamespace,
+                DirectSyntax);
         }
 
         try
@@ -46,18 +67,74 @@ internal static class AgentEvidenceResolver
                 pointer = string.Empty;
             }
 
-            if (!TryResolvePointer(document.RootElement, pointer, out var value, out var error))
+            if (TryResolvePointer(document.RootElement, pointer, out var value, out var error))
             {
-                return Missing(location, error!);
+                return Resolved(
+                    location,
+                    value,
+                    evidenceNamespace,
+                    DirectSyntax);
             }
 
-            return new AgentEvidenceResolution(location, true, value.Clone(), null);
+            string? envelopeError = null;
+            var usesEnvelopeSyntax = TryNormalizeCopilotCliEnvelopePointer(
+                pointer,
+                out var normalizedPointer);
+            if (usesEnvelopeSyntax
+                && TryResolvePointer(
+                    document.RootElement,
+                    normalizedPointer,
+                    out value,
+                    out envelopeError))
+            {
+                return Resolved(
+                    location,
+                    value,
+                    evidenceNamespace,
+                    CopilotCliEnvelopeSyntax);
+            }
+
+            var resolutionError = usesEnvelopeSyntax
+                ? envelopeError
+                : error;
+            return Missing(
+                location,
+                resolutionError == "The JSON pointer must be empty or start with '/'."
+                    || resolutionError?.Contains(
+                        "invalid '~' escape",
+                        StringComparison.Ordinal) == true
+                    ? AgentCitationFailureKind.InvalidLocation
+                    : AgentCitationFailureKind.OutsideRetainedEvidence,
+                resolutionError ?? "The location did not resolve.",
+                evidenceNamespace,
+                usesEnvelopeSyntax
+                    ? CopilotCliEnvelopeSyntax
+                    : DirectSyntax);
         }
         catch (JsonException exception)
         {
-            return Missing(location, $"The referenced tool result is not valid JSON: {exception.Message}");
+            return Missing(
+                location,
+                AgentCitationFailureKind.InvalidRetainedArtifact,
+                $"The referenced tool result is not valid JSON: {exception.Message}",
+                evidenceNamespace,
+                DirectSyntax);
         }
     }
+
+    private static AgentEvidenceResolution Resolved(
+        string location,
+        JsonElement value,
+        string evidenceNamespace,
+        string syntax)
+        => new(
+            location,
+            true,
+            value.Clone(),
+            null,
+            null,
+            evidenceNamespace,
+            syntax);
 
     private static bool TryResolvePointer(
         JsonElement root,
@@ -140,6 +217,38 @@ internal static class AgentEvidenceResolver
         return true;
     }
 
-    private static AgentEvidenceResolution Missing(string location, string error)
-        => new(location, false, null, error);
+    private static bool TryNormalizeCopilotCliEnvelopePointer(
+        string pointer,
+        out string normalized)
+    {
+        if (pointer is "/json" or "/json/")
+        {
+            normalized = string.Empty;
+            return true;
+        }
+
+        if (pointer.StartsWith("/json/", StringComparison.Ordinal))
+        {
+            normalized = pointer["/json".Length..];
+            return true;
+        }
+
+        normalized = string.Empty;
+        return false;
+    }
+
+    private static AgentEvidenceResolution Missing(
+        string location,
+        AgentCitationFailureKind failureKind,
+        string error,
+        string consideredNamespace,
+        string syntax)
+        => new(
+            location,
+            false,
+            null,
+            error,
+            failureKind,
+            consideredNamespace,
+            syntax);
 }

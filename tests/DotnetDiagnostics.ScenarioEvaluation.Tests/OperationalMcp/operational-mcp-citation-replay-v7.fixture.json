@@ -1,0 +1,215 @@
+{
+  "source": {
+    "protocol": "operational-mcp-allocation-field-isolation-v7",
+    "pilotReportSha256": "9faaf9bea6c749ad065956f19eaf6c4a7a92a41a36fa4fa739d018b57a997bdf",
+    "note": "The locations are copied from the frozen Protocol 7 report. Evidence values are synthetic equivalents and contain no operational payload."
+  },
+  "cases": [
+    {
+      "id": "protocol7-sparse-categorical-quality-18",
+      "results": [
+        {
+          "toolCallId": "predeclared-query-1",
+          "content": {
+            "summary": "Synthetic replay evidence.",
+            "data": {
+              "requestedCaptureCount": 3,
+              "assumptions": [
+                "Synthetic assumption zero.",
+                "Synthetic assumption one."
+              ],
+              "limitations": [
+                "Synthetic limitation zero.",
+                "Synthetic limitation one."
+              ],
+              "captures": [
+                {
+                  "attributionState": "empty",
+                  "estimatedBytes": 0,
+                  "allocationTicks": 0,
+                  "allocatedTypes": [],
+                  "allocationStacks": []
+                },
+                {
+                  "attributionState": "partial",
+                  "estimatedBytes": 100,
+                  "allocationTicks": 1,
+                  "allocatedTypes": [
+                    {
+                      "displayName": "Synthetic.Type",
+                      "estimatedBytes": 100,
+                      "allocationTicks": 1
+                    }
+                  ],
+                  "allocationStacks": [
+                    {
+                      "displayName": "Synthetic.Stack",
+                      "estimatedBytes": 100,
+                      "allocationTicks": 1
+                    }
+                  ]
+                },
+                {
+                  "attributionState": "empty",
+                  "estimatedBytes": 0,
+                  "allocationTicks": 0,
+                  "allocatedTypes": [],
+                  "allocationStacks": []
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "locations": [
+        "tool-result://predeclared-query-1#/json/data/captures/0/attributionState",
+        "tool-result://predeclared-query-1#/json/data/captures/0/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/0/allocationTicks",
+        "tool-result://predeclared-query-1#/json/data/captures/1/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocationTicks",
+        "tool-result://predeclared-query-1#/json/data/captures/2/attributionState",
+        "tool-result://predeclared-query-1#/json/data/captures/2/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/2/allocationTicks",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocatedTypes/0/displayName",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocatedTypes/0/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocatedTypes/0/allocationTicks",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocationStacks/0/displayName",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocationStacks/0/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocationStacks/0/allocationTicks",
+        "tool-result://predeclared-query-1#/json/data/requestedCaptureCount",
+        "tool-result://predeclared-query-1#/json/data/limitations/0",
+        "tool-result://predeclared-query-1#/json/data/assumptions/1",
+        "tool-result://predeclared-query-1#/json/data/limitations/1"
+      ]
+    },
+    {
+      "id": "protocol7-healthy-categorical-median-mad-24",
+      "results": [
+        {
+          "toolCallId": "predeclared-collect-1",
+          "content": {
+            "signals": [
+              {
+                "salience": 1
+              }
+            ]
+          }
+        },
+        {
+          "toolCallId": "predeclared-collect-2",
+          "content": {
+            "signals": [
+              {
+                "salience": 1
+              }
+            ]
+          }
+        },
+        {
+          "toolCallId": "predeclared-collect-3",
+          "content": {
+            "signals": [
+              {
+                "salience": 1
+              }
+            ]
+          }
+        },
+        {
+          "toolCallId": "predeclared-query-1",
+          "content": {
+            "summary": "Synthetic replay evidence.",
+            "data": {
+              "requestedCaptureCount": 3,
+              "availableCaptureCount": 3,
+              "compatibility": {
+                "status": "compatible"
+              },
+              "assumptions": [
+                "Synthetic assumption zero.",
+                "Synthetic assumption one."
+              ],
+              "limitations": [
+                "Synthetic limitation zero.",
+                "Synthetic limitation one."
+              ],
+              "captures": [
+                {
+                  "processId": 1,
+                  "estimatedBytes": 100,
+                  "allocatedTypes": [
+                    {
+                      "displayName": "Synthetic.Type.One",
+                      "estimatedBytes": 100
+                    }
+                  ],
+                  "allocationStacks": [
+                    {
+                      "displayName": "Synthetic.Stack.One"
+                    }
+                  ]
+                },
+                {
+                  "processId": 2,
+                  "estimatedBytes": 200,
+                  "allocatedTypes": [
+                    {
+                      "displayName": "Synthetic.Type.Two",
+                      "estimatedBytes": 200
+                    }
+                  ],
+                  "allocationStacks": [
+                    {
+                      "displayName": "Synthetic.Stack.Two"
+                    }
+                  ]
+                },
+                {
+                  "processId": 3,
+                  "estimatedBytes": 300,
+                  "allocatedTypes": [
+                    {
+                      "displayName": "Synthetic.Type.Three",
+                      "estimatedBytes": 300
+                    }
+                  ],
+                  "allocationStacks": [
+                    {
+                      "displayName": "Synthetic.Stack.Three"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "locations": [
+        "tool-result://predeclared-query-1#/json/data/requestedCaptureCount",
+        "tool-result://predeclared-query-1#/json/data/availableCaptureCount",
+        "tool-result://predeclared-query-1#/json/data/compatibility/status",
+        "tool-result://predeclared-query-1#/json/data/captures/0/processId",
+        "tool-result://predeclared-query-1#/json/data/captures/1/processId",
+        "tool-result://predeclared-query-1#/json/data/captures/2/processId",
+        "tool-result://predeclared-query-1#/json/data/captures/0/allocatedTypes/0/displayName",
+        "tool-result://predeclared-query-1#/json/data/captures/0/allocatedTypes/0/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/0/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocatedTypes/0/displayName",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocatedTypes/0/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/1/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/2/allocatedTypes/0/displayName",
+        "tool-result://predeclared-query-1#/json/data/captures/2/allocatedTypes/0/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/2/estimatedBytes",
+        "tool-result://predeclared-query-1#/json/data/captures/0/allocationStacks/0/displayName",
+        "tool-result://predeclared-query-1#/json/data/captures/1/allocationStacks/0/displayName",
+        "tool-result://predeclared-query-1#/json/data/captures/2/allocationStacks/0/displayName",
+        "tool-result://predeclared-collect-1#/json/signals/0/salience",
+        "tool-result://predeclared-collect-2#/json/signals/0/salience",
+        "tool-result://predeclared-collect-3#/json/signals/0/salience",
+        "tool-result://predeclared-query-1#/json/summary",
+        "tool-result://predeclared-query-1#/json/data/assumptions/1",
+        "tool-result://predeclared-query-1#/json/data/limitations/1"
+      ]
+    }
+  ]
+}

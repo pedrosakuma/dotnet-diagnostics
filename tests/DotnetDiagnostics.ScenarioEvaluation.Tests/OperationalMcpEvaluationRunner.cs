@@ -42,6 +42,13 @@ internal static class OperationalMcpEvaluationRunner
                 protocol.Budgets.MaximumAssessmentInputBytes,
                 protocol.Budgets.MaximumAssessmentTransportOutputBytes,
                 protocol.AssessorAdditiveProperties,
+                new OperationalAssessmentEvidenceContext(
+                    protocol.ProtocolId,
+                    OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                    "assessor-preflight",
+                    Math.Min(
+                        OperationalMcpAssessor.MaximumFailureEvidenceBytes,
+                        protocol.Budgets.MaximumArtifactBytes)),
                 suiteWallTime.Token).ConfigureAwait(false);
             if (assessorPreflight.Stage.Status != AgentHarnessStageStatus.Passed)
             {
@@ -196,6 +203,9 @@ internal static class OperationalMcpEvaluationRunner
                 protocol,
                 conclusionAttempts,
                 heldout.Length > 0),
+            RetainedArtifactBytes =
+                (assessorPreflight?.RetainedArtifactBytes ?? 0)
+                + attempts.Sum(attempt => attempt.RetainedArtifactBytes),
         };
         OperationalMcpJson.Write(Path.Combine(outputRoot, "pilot-report.json"), report);
         return report;
@@ -294,6 +304,16 @@ internal static class OperationalMcpEvaluationRunner
             protocol.Budgets.MaximumAssessmentInputBytes,
             protocol.Budgets.MaximumAssessmentTransportOutputBytes,
             protocol.AssessorAdditiveProperties,
+            new OperationalAssessmentEvidenceContext(
+                protocol.ProtocolId,
+                OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                $"{testCase.Partition}/{testCase.Id}/{arm}",
+                Math.Min(
+                    OperationalMcpAssessor.MaximumFailureEvidenceBytes,
+                    Math.Max(
+                        0,
+                        protocol.Budgets.MaximumArtifactBytes
+                        - investigation.RetainedArtifactBytes))),
             cancellationToken).ConfigureAwait(false);
         var exchanges = gateway?.Exchanges ?? [];
         var predeclaredHashes = exchanges
@@ -330,6 +350,10 @@ internal static class OperationalMcpEvaluationRunner
                 .Where(hash => !predeclaredHashes.Contains(hash))
                 .Distinct(StringComparer.Ordinal)
                 .Count(),
+            RetainedArtifactBytes = OperationalMcpArtifactAccounting.CombineRetainedBytes(
+                investigation.RetainedArtifactBytes,
+                assessment.RetainedArtifactBytes,
+                protocol.Budgets.MaximumArtifactBytes),
         };
         OperationalMcpJson.Write(Path.Combine(attemptDirectory, "run-report.json"), report);
         return report;

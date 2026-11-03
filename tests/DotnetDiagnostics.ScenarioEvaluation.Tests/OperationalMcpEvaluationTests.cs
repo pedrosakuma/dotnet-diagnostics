@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
@@ -105,6 +106,117 @@ public sealed class OperationalMcpProtocolTests
         resolution.Exists.Should().BeTrue();
         resolution.Value!.Value.GetProperty("availability").GetString()
             .Should().Be("available");
+    }
+
+    [Fact]
+    public void CitationResolver_ReplaysAllFrozenProtocol7EnvelopeLocations()
+    {
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-citation-replay-v7.fixture.json");
+        using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
+        var observedCounts = new List<int>();
+
+        foreach (var testCase in fixture.RootElement.GetProperty("cases").EnumerateArray())
+        {
+            var results = testCase.GetProperty("results")
+                .EnumerateArray()
+                .Select(result =>
+                {
+                    var content = result.GetProperty("content").GetRawText();
+                    return new AgentToolResult(
+                        result.GetProperty("toolCallId").GetString()!,
+                        "synthetic",
+                        true,
+                        content,
+                        BlindedDiagnosticToolGateway.Sha256(content),
+                        System.Text.Encoding.UTF8.GetByteCount(content),
+                        false,
+                        null);
+                })
+                .ToArray();
+            var locations = testCase.GetProperty("locations")
+                .EnumerateArray()
+                .Select(location => location.GetString()!)
+                .ToArray();
+
+            var resolutions = locations
+                .Select(location => AgentEvidenceResolver.Resolve(location, results))
+                .ToArray();
+
+            resolutions.Should().OnlyContain(
+                resolution => resolution.Exists,
+                testCase.GetProperty("id").GetString());
+            resolutions.Should().OnlyContain(
+                resolution => resolution.Syntax == "copilot-cli-json-envelope");
+            observedCounts.Add(resolutions.Length);
+        }
+
+        observedCounts.Should().Equal(18, 24);
+    }
+
+    [Fact]
+    public void CitationResolver_SupportsOnlyExactDeclaredSyntaxes()
+    {
+        var result = ToolResult(
+            "call-1",
+            """{"data":{"value":1},"a/b":{"~key":[7]},"json":{"actual":2}}""");
+        var withoutJsonProperty = ToolResult(
+            "call-2",
+            """{"data":{"value":1}}""");
+
+        AgentEvidenceResolver.Resolve("tool-result://call-1#", [result])
+            .Exists.Should().BeTrue();
+        AgentEvidenceResolver.Resolve("tool-result://call-1#/", [result])
+            .Exists.Should().BeTrue();
+        AgentEvidenceResolver.Resolve("tool-result://call-1#/data/value", [result])
+            .Syntax.Should().Be("direct-json-pointer");
+        AgentEvidenceResolver.Resolve("tool-result://call-1#/json/data/value", [result])
+            .Syntax.Should().Be("copilot-cli-json-envelope");
+        AgentEvidenceResolver.Resolve("tool-result://call-2#/json", [withoutJsonProperty])
+            .Value!.Value.GetProperty("data").GetProperty("value").GetInt32()
+            .Should().Be(1);
+        AgentEvidenceResolver.Resolve("tool-result://call-2#/json/", [withoutJsonProperty])
+            .Exists.Should().BeTrue();
+        AgentEvidenceResolver.Resolve("tool-result://call-1#/a~1b/~0key/0", [result])
+            .Value!.Value.GetInt32().Should().Be(7);
+        AgentEvidenceResolver.Resolve("tool-result://call-1#/json/actual", [result])
+            .Syntax.Should().Be(
+                "direct-json-pointer",
+                "a real retained top-level json property takes precedence over the virtual envelope");
+    }
+
+    [Fact]
+    public void CitationResolver_ClassifiesNegativeReplayWithoutFallback()
+    {
+        var result = ToolResult("call-1", """{"data":{"value":1}}""");
+        var invalidJson = ToolResult("invalid-json", "{");
+        var ambiguous = new[]
+        {
+            ToolResult("duplicate", "{}"),
+            ToolResult("duplicate", "{}"),
+        };
+
+        AgentEvidenceResolver.Resolve("not-a-location", [result])
+            .FailureKind.Should().Be(AgentCitationFailureKind.InvalidLocation);
+        AgentEvidenceResolver.Resolve("tool-result://missing#/data", [result])
+            .FailureKind.Should().Be(AgentCitationFailureKind.UnavailableArtifact);
+        AgentEvidenceResolver.Resolve("tool-result://call-1#/missing", [result])
+            .FailureKind.Should().Be(AgentCitationFailureKind.OutsideRetainedEvidence);
+        var missingEnvelopeValue = AgentEvidenceResolver.Resolve(
+            "tool-result://call-1#/json/missing",
+            [result]);
+        missingEnvelopeValue.FailureKind.Should()
+            .Be(AgentCitationFailureKind.OutsideRetainedEvidence);
+        missingEnvelopeValue.Error.Should().Contain("'missing'")
+            .And.NotContain("'json'");
+        AgentEvidenceResolver.Resolve("tool-result://call-1#/~2", [result])
+            .FailureKind.Should().Be(AgentCitationFailureKind.InvalidLocation);
+        AgentEvidenceResolver.Resolve("tool-result://invalid-json#", [invalidJson])
+            .FailureKind.Should().Be(AgentCitationFailureKind.InvalidRetainedArtifact);
+        AgentEvidenceResolver.Resolve("tool-result://duplicate#", ambiguous)
+            .FailureKind.Should().Be(AgentCitationFailureKind.UnavailableArtifact);
     }
 
     [Fact]
@@ -247,6 +359,216 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
+    public async Task Assessor_UnexpectedPropertyRetainsBoundedRedactedReplayEvidence()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-assessor-conformance-v7.fixture.json");
+        using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
+        var cases = fixture.RootElement.GetProperty("cases")
+            .EnumerateArray()
+            .Where(testCase => testCase.TryGetProperty("expectedPath", out _))
+            .ToArray();
+
+        foreach (var testCase in cases)
+        {
+            var response = testCase.GetProperty("response").GetRawText();
+            var turn = new AgentModelTurn(
+                $"{{\"transport\":\"synthetic\",\"assessment\":{response}}}",
+                response,
+                [],
+                new AgentModelUsage(null, null, null),
+                null)
+            {
+                TransportOutputBytes = 4096,
+            };
+            var assessment = await OperationalMcpAssessor.AssessAsync(
+                protocol.Cases[0],
+                CreateInvestigation(),
+                ModelConfiguration(),
+                new SingleTurnTransport(turn),
+                maximumWallTimeSeconds: 5,
+                maximumInputBytes: 32_768,
+                maximumTransportOutputBytes: 8_192,
+                protocol.AssessorAdditiveProperties,
+                new OperationalAssessmentEvidenceContext(
+                    protocol.ProtocolId,
+                    OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                    $"fixture/{testCase.GetProperty("id").GetString()}",
+                    OperationalMcpAssessor.MaximumFailureEvidenceBytes),
+                CancellationToken.None);
+
+            assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+            assessment.Stage.Detail.Should().Contain(
+                testCase.GetProperty("expectedPath").GetString());
+            assessment.Stage.Detail.Should().Contain(
+                testCase.GetProperty("expectedValueKind").GetString());
+            assessment.FailureEvidence.Should().NotBeNull();
+            assessment.FailureEvidence!.Category.Should().Be(
+                OperationalAssessmentFailureCategory.UnexpectedProperty);
+            assessment.FailureEvidence.JsonPath.Should().Be(
+                testCase.GetProperty("expectedPath").GetString());
+            assessment.FailureEvidence.ValueKind.Should().Be(
+                testCase.GetProperty("expectedValueKind").GetString());
+            assessment.FailureEvidence.RawResponseSha256.Should().HaveLength(64);
+            assessment.FailureEvidence.RawResponseBytes.Should().Be(
+                System.Text.Encoding.UTF8.GetByteCount(turn.RawResponse));
+            assessment.FailureEvidence.AssistantContentSha256.Should().HaveLength(64);
+            assessment.FailureEvidence.AssistantContentBytes.Should().Be(
+                System.Text.Encoding.UTF8.GetByteCount(response));
+            assessment.FailureEvidence.Redacted.Should().BeTrue();
+            assessment.FailureEvidence.Truncated.Should().BeFalse();
+            assessment.FailureEvidence.ReplayJson.Should().NotContain(
+                "Synthetic unexpected");
+            assessment.RetainedArtifactBytes.Should().Be(
+                assessment.FailureEvidence.RetainedBytes);
+        }
+    }
+
+    [Fact]
+    public async Task Assessor_CanonicalFailureEvidenceReplaysConformanceFailures()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-assessor-conformance-v7.fixture.json");
+        using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
+        var failedCases = fixture.RootElement.GetProperty("cases")
+            .EnumerateArray()
+            .Where(testCase =>
+                testCase.GetProperty("expectedStatus").GetString() == "failed")
+            .ToArray();
+
+        foreach (var testCase in failedCases)
+        {
+            var response = testCase.GetProperty("response").GetRawText();
+            var context = new OperationalAssessmentEvidenceContext(
+                protocol.ProtocolId,
+                OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                $"fixture/{testCase.GetProperty("id").GetString()}",
+                OperationalMcpAssessor.MaximumFailureEvidenceBytes);
+            var original = await OperationalMcpAssessor.AssessAsync(
+                protocol.Cases[0],
+                CreateInvestigation(),
+                ModelConfiguration(),
+                new SingleTurnTransport(new AgentModelTurn(
+                    response,
+                    response,
+                    [],
+                    new AgentModelUsage(null, null, null),
+                    null)),
+                maximumWallTimeSeconds: 5,
+                maximumInputBytes: 32_768,
+                maximumTransportOutputBytes: 131_072,
+                protocol.AssessorAdditiveProperties,
+                context,
+                CancellationToken.None);
+
+            original.FailureEvidence.Should().NotBeNull(
+                testCase.GetProperty("id").GetString());
+            original.FailureEvidence!.ReplayJson.Should().NotBeNull(
+                testCase.GetProperty("id").GetString());
+            var replayJson = original.FailureEvidence.ReplayJson!;
+            var replay = await OperationalMcpAssessor.AssessAsync(
+                protocol.Cases[0],
+                CreateInvestigation(),
+                ModelConfiguration(),
+                new SingleTurnTransport(new AgentModelTurn(
+                    replayJson,
+                    replayJson,
+                    [],
+                    new AgentModelUsage(null, null, null),
+                    null)),
+                maximumWallTimeSeconds: 5,
+                maximumInputBytes: 32_768,
+                maximumTransportOutputBytes: 131_072,
+                protocol.AssessorAdditiveProperties,
+                context,
+                CancellationToken.None);
+
+            replay.Stage.Status.Should().Be(
+                AgentHarnessStageStatus.Failed,
+                testCase.GetProperty("id").GetString());
+            replay.FailureEvidence.Should().NotBeNull();
+            replay.FailureEvidence!.Category.Should().Be(
+                original.FailureEvidence.Category);
+            replay.FailureEvidence.JsonPath.Should().Be(
+                original.FailureEvidence.JsonPath);
+            replay.FailureEvidence.PropertyName.Should().Be(
+                original.FailureEvidence.PropertyName);
+            replay.FailureEvidence.ValueKind.Should().Be(
+                original.FailureEvidence.ValueKind);
+        }
+    }
+
+    [Theory]
+    [InlineData(256, true)]
+    [InlineData(1, false)]
+    public async Task Assessor_FailureReplayHonorsArtifactBudget(
+        int maximumRetainedBytes,
+        bool expectsEnvelope)
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var values = Enumerable.Range(0, 1000)
+            .Select(index => JsonValue.Create($"private-value-{index}"))
+            .ToArray();
+        var response = new JsonObject
+        {
+            ["claims"] = new JsonArray(new JsonObject
+            {
+                ["index"] = 0,
+                ["support"] = "supported",
+                ["rationale"] = "Synthetic rationale.",
+            }),
+            ["uncertainty"] = "appropriate",
+            ["uncertaintyRationale"] = "Synthetic uncertainty.",
+            ["unsupportedCertaintyFindings"] = new JsonArray(),
+            ["usefulNextSteps"] = new JsonArray(),
+            ["unhelpfulNextSteps"] = new JsonArray(),
+            ["summary"] = "Synthetic summary.",
+            ["text"] = new JsonArray(values),
+        }.ToJsonString();
+        var assessment = await OperationalMcpAssessor.AssessAsync(
+            protocol.Cases[0],
+            CreateInvestigation(),
+            ModelConfiguration(),
+            new SingleTurnTransport(new AgentModelTurn(
+                response,
+                response,
+                [],
+                new AgentModelUsage(null, null, null),
+                null)),
+            maximumWallTimeSeconds: 5,
+            maximumInputBytes: 32_768,
+            maximumTransportOutputBytes: 131_072,
+            protocol.AssessorAdditiveProperties,
+            new OperationalAssessmentEvidenceContext(
+                protocol.ProtocolId,
+                OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                "fixture/truncation",
+                maximumRetainedBytes),
+            CancellationToken.None);
+
+        assessment.FailureEvidence.Should().NotBeNull();
+        assessment.FailureEvidence!.Truncated.Should().BeTrue();
+        assessment.FailureEvidence.RetainedBytes.Should()
+            .BeLessThanOrEqualTo(maximumRetainedBytes);
+        if (expectsEnvelope)
+        {
+            assessment.FailureEvidence.ReplayJson.Should()
+                .Contain("\"canonicalResponseTruncated\":true");
+        }
+        else
+        {
+            assessment.FailureEvidence.ReplayJson.Should().BeNull();
+            assessment.FailureEvidence.RetainedBytes.Should().Be(0);
+        }
+    }
+
+    [Fact]
     public async Task AssessorPreflight_RequiresStrictSchemaAndRecordsTransportBytes()
     {
         var turn = new AgentModelTurn(
@@ -342,6 +664,13 @@ public sealed class OperationalMcpProtocolTests
         var failureAccounting = new OperationalMcpArtifactAccounting(maximumBytes: 100);
         failureAccounting.RetainFailureExchange(7, 11);
         failureAccounting.RetainedBytes.Should().Be(18);
+
+        OperationalMcpArtifactAccounting.CombineRetainedBytes(75, 25, 100)
+            .Should().Be(100);
+        var overflow = () =>
+            OperationalMcpArtifactAccounting.CombineRetainedBytes(76, 25, 100);
+        overflow.Should().Throw<InvalidOperationException>()
+            .WithMessage("*exceeded the artifact budget*");
     }
 
     [Fact]
@@ -1048,6 +1377,17 @@ public sealed class OperationalMcpProtocolTests
             }
         }
     }
+
+    private static AgentToolResult ToolResult(string callId, string content)
+        => new(
+            callId,
+            "synthetic",
+            true,
+            content,
+            BlindedDiagnosticToolGateway.Sha256(content),
+            System.Text.Encoding.UTF8.GetByteCount(content),
+            false,
+            null);
 
     private sealed class NeverTransport : IAgentModelTransport
     {
