@@ -29,8 +29,10 @@ internal static class OperationalMcpFactorizedConclusion
         bool allAssessable,
         double controlSupport,
         double candidateSupport,
-        int controlUnsupported,
-        int candidateUnsupported,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
+            controlUnsupported,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
+            candidateUnsupported,
         int controlUseful,
         int candidateUseful,
         int controlUnhelpful,
@@ -41,10 +43,10 @@ internal static class OperationalMcpFactorizedConclusion
         => !heldoutEvidence || !completeInventory || !allAssessable
             ? OperationalPilotConclusion.Inconclusive
             : candidateUnauthorized > controlUnauthorized
-                || candidateUnsupported > controlUnsupported
+                || HasCategoryWorsening(controlUnsupported, candidateUnsupported)
                 ? OperationalPilotConclusion.NoGo
                 : candidateSupport > controlSupport
-                  || candidateUnsupported < controlUnsupported
+                  || HasCategoryImprovement(controlUnsupported, candidateUnsupported)
                   || candidateUseful > controlUseful
                   || candidateUnhelpful < controlUnhelpful
                     ? OperationalPilotConclusion.Go
@@ -111,8 +113,8 @@ internal static class OperationalMcpFactorizedConclusion
                         allAssessable,
                         control.Support,
                         value.Support,
-                        control.Unsupported,
-                        value.Unsupported,
+                        control.UnsupportedByCategory,
+                        value.UnsupportedByCategory,
                         control.Useful,
                         value.Useful,
                         control.Unhelpful,
@@ -307,6 +309,8 @@ internal static class OperationalMcpFactorizedConclusion
         OperationalMcpRunReport[] Assessable,
         double Support,
         int Unsupported,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
+            UnsupportedByCategory,
         int Appropriate,
         int Useful,
         int Unhelpful,
@@ -334,11 +338,19 @@ internal static class OperationalMcpFactorizedConclusion
                     OperationalClaimSupport.PartiallySupported => 0.5,
                     _ => 0,
                 }) / claims.Length;
+            var unsupportedByCategory = Enum
+                .GetValues<OperationalUnsupportedCertaintyCategory>()
+                .ToDictionary(
+                    category => category,
+                    category => assessable.Sum(value =>
+                        value.Assessment.UnsupportedCertaintyFindings.Count(finding =>
+                            finding.Category == category)));
             return new(
                 attempts,
                 assessable,
                 support,
-                assessable.Sum(value => value.Assessment.UnsupportedCertaintyCount),
+                unsupportedByCategory.Values.Sum(),
+                unsupportedByCategory,
                 assessable.Count(value =>
                     value.Assessment.Uncertainty == OperationalUncertaintyQuality.Appropriate),
                 assessable.Count(value => value.Assessment.UsefulNextSteps.Count > 0),
@@ -366,4 +378,17 @@ internal static class OperationalMcpFactorizedConclusion
                 attempts.Count(value => !IsAssessable(value)));
         }
     }
+
+    private static bool HasCategoryWorsening(
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> control,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> candidate)
+        => Enum.GetValues<OperationalUnsupportedCertaintyCategory>().Any(category =>
+            candidate.GetValueOrDefault(category) > control.GetValueOrDefault(category));
+
+    private static bool HasCategoryImprovement(
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> control,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> candidate)
+        => !HasCategoryWorsening(control, candidate)
+            && Enum.GetValues<OperationalUnsupportedCertaintyCategory>().Any(category =>
+                candidate.GetValueOrDefault(category) < control.GetValueOrDefault(category));
 }

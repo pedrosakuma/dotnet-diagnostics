@@ -173,7 +173,7 @@ internal static class OperationalMcpEvaluationRunner
             conclusions,
             [
                 "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, universal product claim, or automatic product-adoption verdict.",
-                "Protocol 7 isolates the current post-#1342 allocation measurement-quality fields under one shared neutral guard package; it does not reinterpret preserved protocols 1 through 6.",
+                "Protocol 8 reruns the post-#1342 allocation measurement-quality field isolation under one shared neutral guard package after the #1364 evaluator reliability correction; it does not reinterpret preserved protocols 1 through 7.",
                 "The diagnosing and assessing phases use different frozen models and isolated contexts; that does not eliminate shared-provider or training-data bias.",
                 "Fresh processes and captures reduce dependence but do not eliminate platform, scheduler, JIT, EventPipe, symbol, or workload variability.",
                 "Sample recognition cannot be ruled out because repository-owned workload symbols may appear in MCP evidence.",
@@ -423,10 +423,12 @@ internal static class OperationalMcpEvaluationRunner
         var currentAssessable = current.Where(IsAssessable).ToArray();
         var controlSupport = SupportRate(controlAssessable);
         var currentSupport = SupportRate(currentAssessable);
-        var controlUnsupported = controlAssessable.Sum(value =>
-            value.Assessment.UnsupportedCertaintyCount);
-        var currentUnsupported = currentAssessable.Sum(value =>
-            value.Assessment.UnsupportedCertaintyCount);
+        var controlUnsupportedByCategory =
+            UnsupportedCertaintyByCategory(controlAssessable);
+        var currentUnsupportedByCategory =
+            UnsupportedCertaintyByCategory(currentAssessable);
+        var controlUnsupported = controlUnsupportedByCategory.Values.Sum();
+        var currentUnsupported = currentUnsupportedByCategory.Values.Sum();
         var controlAppropriate = controlAssessable.Count(value =>
             value.Assessment.Uncertainty == OperationalUncertaintyQuality.Appropriate);
         var currentAppropriate = currentAssessable.Count(value =>
@@ -492,8 +494,8 @@ internal static class OperationalMcpEvaluationRunner
             completeCaseInventory,
             controlSupport,
             currentSupport,
-            controlUnsupported,
-            currentUnsupported,
+            controlUnsupportedByCategory,
+            currentUnsupportedByCategory,
             controlUseful,
             currentUseful,
             controlUnhelpful,
@@ -656,8 +658,10 @@ internal static class OperationalMcpEvaluationRunner
         bool completeCaseInventory,
         double controlSupport,
         double currentSupport,
-        int controlUnsupported,
-        int currentUnsupported,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
+            controlUnsupported,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
+            currentUnsupported,
         int controlUseful,
         int currentUseful,
         int controlUnhelpful,
@@ -668,10 +672,10 @@ internal static class OperationalMcpEvaluationRunner
         => !heldoutEvidence || !allAssessable || !completeCaseInventory
             ? OperationalPilotConclusion.Inconclusive
             : currentUnauthorized > controlUnauthorized
-                || currentUnsupported > controlUnsupported
+                || HasCategoryWorsening(controlUnsupported, currentUnsupported)
                 ? OperationalPilotConclusion.NoGo
                 : currentSupport > controlSupport
-                  || currentUnsupported < controlUnsupported
+                  || HasCategoryImprovement(controlUnsupported, currentUnsupported)
                   || currentUseful > controlUseful
                   || currentUnhelpful < controlUnhelpful
                     ? OperationalPilotConclusion.Go
@@ -797,6 +801,28 @@ internal static class OperationalMcpEvaluationRunner
             .ToArray();
         return counts.Length == 0 ? "none" : string.Join(", ", counts);
     }
+
+    private static Dictionary<OperationalUnsupportedCertaintyCategory, int>
+        UnsupportedCertaintyByCategory(IReadOnlyList<OperationalMcpRunReport> attempts)
+        => Enum.GetValues<OperationalUnsupportedCertaintyCategory>()
+            .ToDictionary(
+                category => category,
+                category => attempts.Sum(attempt =>
+                    attempt.Assessment.UnsupportedCertaintyFindings.Count(finding =>
+                        finding.Category == category)));
+
+    private static bool HasCategoryWorsening(
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> control,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> current)
+        => Enum.GetValues<OperationalUnsupportedCertaintyCategory>().Any(category =>
+            current.GetValueOrDefault(category) > control.GetValueOrDefault(category));
+
+    private static bool HasCategoryImprovement(
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> control,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> current)
+        => !HasCategoryWorsening(control, current)
+            && Enum.GetValues<OperationalUnsupportedCertaintyCategory>().Any(category =>
+                current.GetValueOrDefault(category) < control.GetValueOrDefault(category));
 
     private static string ResponseProjectionFingerprint(
         OperationalMcpProtocol protocol,
