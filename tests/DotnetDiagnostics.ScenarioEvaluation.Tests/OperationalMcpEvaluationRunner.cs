@@ -133,21 +133,23 @@ internal static class OperationalMcpEvaluationRunner
             .Where(attempt => attempt.Partition == OperationalMcpPartition.Development)
             .ToArray();
         var conclusionAttempts = heldout.Length > 0 ? heldout : development;
-        var conclusions = Enum.GetValues<OperationalMcpFamily>()
-            .Where(family => protocol.Inventory.Any(entry =>
-                entry.Family == family
-                && entry.Eligibility == OperationalMcpEligibility.Eligible))
-            .Select(family => Conclude(
-                family,
-                conclusionAttempts.Where(value => value.Family == family).ToArray(),
-                heldout.Length > 0,
-                protocol.DecisionRule,
-                protocol.Cases.Count(testCase =>
-                    testCase.Partition == (heldout.Length > 0
-                        ? OperationalMcpPartition.Heldout
-                        : OperationalMcpPartition.Development)
-                    && testCase.Family == family)))
-            .ToArray();
+        var conclusions = protocol.ActiveArms.Contains(OperationalMcpArm.CompleteCurrent)
+            ? Enum.GetValues<OperationalMcpFamily>()
+                .Where(family => protocol.Inventory.Any(entry =>
+                    entry.Family == family
+                    && entry.Eligibility == OperationalMcpEligibility.Eligible))
+                .Select(family => Conclude(
+                    family,
+                    conclusionAttempts.Where(value => value.Family == family).ToArray(),
+                    heldout.Length > 0,
+                    protocol.DecisionRule,
+                    protocol.Cases.Count(testCase =>
+                        testCase.Partition == (heldout.Length > 0
+                            ? OperationalMcpPartition.Heldout
+                            : OperationalMcpPartition.Development)
+                        && testCase.Family == family)))
+                .ToArray()
+            : [];
         var catalogFingerprints = attempts.Select(value => value.CatalogFingerprint)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
@@ -156,7 +158,7 @@ internal static class OperationalMcpEvaluationRunner
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
             OperationalMcpProtocolLoader.InventoryFingerprint(protocol),
             OperationalMcpProtocolLoader.ProjectionFingerprint(protocol),
-            Enum.GetValues<OperationalMcpArm>().ToDictionary(
+            protocol.ActiveArms.ToDictionary(
                 arm => arm,
                 arm => ResponseProjectionFingerprint(protocol, arm)),
             protocol.ExpectedProductFingerprint,
@@ -173,7 +175,7 @@ internal static class OperationalMcpEvaluationRunner
             conclusions,
             [
                 "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, universal product claim, or automatic product-adoption verdict.",
-                "Protocol 8 reruns the post-#1342 allocation measurement-quality field isolation under one shared neutral guard package after the #1364 evaluator reliability correction; it does not reinterpret preserved protocols 1 through 7.",
+                "Protocol 9 compares only control, median/MAD, and Jaccard under the frozen lexicographic selector after the #1368 evaluator alias correction; it does not reinterpret preserved protocols 1 through 8.",
                 "The diagnosing and assessing phases use different frozen models and isolated contexts; that does not eliminate shared-provider or training-data bias.",
                 "Fresh processes and captures reduce dependence but do not eliminate platform, scheduler, JIT, EventPipe, symbol, or workload variability.",
                 "Sample recognition cannot be ruled out because repository-owned workload symbols may appear in MCP evidence.",

@@ -26,18 +26,18 @@ internal static class OperationalMcpProtocolLoader
         ".yaml",
     ];
 
-    public const int CurrentSchemaVersion = 8;
-    public const int CurrentRunSchemaVersion = 8;
-    public const int CurrentPilotSchemaVersion = 8;
+    public const int CurrentSchemaVersion = 9;
+    public const int CurrentRunSchemaVersion = 9;
+    public const int CurrentPilotSchemaVersion = 9;
     internal static readonly string DefaultOutputRoot =
-        Path.Combine("artifacts", "operational-mcp-pilot-v8");
-    internal const string FrozenProtocolVersion = "8.0.0";
+        Path.Combine("artifacts", "operational-mcp-pilot-v9");
+    internal const string FrozenProtocolVersion = "9.0.0";
     internal const string FrozenProtocolFingerprint =
-        "be4235d3f7063a8752e5c6dfc9be4d9d0494bcee1ad8a1e303b1252620003888";
+        "896f4f3230a274b5f5678e685529aec8820b0613fe085142cca189e1e7586adb";
     internal const string FrozenInventoryFingerprint =
-        "dbb9dcaf01f047e69302aa31e6a6638ab711e0fc9e09ed2bf1b713221af36259";
+        "9313a6292282548dd707bc0ac65f456d3a8099e61d5f2d56eef29bc77ff6a0b8";
     internal const string FrozenProjectionFingerprint =
-        "cfe5de2db20b2c592a55d3f7a04a7e5df4cb03f09e55567722a4b0c8936339d2";
+        "26a002bc5b240d7a2ce514573e1fa60b71ee737e4a95302c54a9357a657049ea";
     internal const string PreservedV1FileSha256 =
         "c95d63300432d0d09e2b65bcab5b9fae0c2cfe8ee9ee2fef456714975b939891";
     internal const string PreservedV2FileSha256 =
@@ -52,12 +52,14 @@ internal static class OperationalMcpProtocolLoader
         "74a2878e5736e4b6c69f9cd2506c2c4ec055109f73943b7a3c77f2b04d4ba080";
     internal const string PreservedV7FileSha256 =
         "5325b3f59416ada38ee6569f75e93ed0650cf940e2f0a50e15b69f5fef78accd";
+    internal const string PreservedV8FileSha256 =
+        "9a94a6158c6e9da3f125a2f9fb151a0279bbe1ad3d33988a40ee9a2c3227fac3";
 
     public static string DefaultPath
         => Path.Combine(
             AppContext.BaseDirectory,
             "OperationalMcp",
-            "operational-mcp-allocation-field-isolation-v8.protocol.json");
+            "operational-mcp-allocation-median-mad-jaccard-v9.protocol.json");
 
     public static string PreservedV1Path
         => Path.Combine(
@@ -100,6 +102,12 @@ internal static class OperationalMcpProtocolLoader
             AppContext.BaseDirectory,
             "OperationalMcp",
             "operational-mcp-allocation-field-isolation-v7.protocol.json");
+
+    public static string PreservedV8Path
+        => Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-allocation-field-isolation-v8.protocol.json");
 
     public static OperationalMcpProtocol LoadDefault()
     {
@@ -204,6 +212,23 @@ internal static class OperationalMcpProtocolLoader
         return OperationalMcpJson.Read<OperationalMcpProtocol>(PreservedV7Path);
     }
 
+    public static void ValidatePreservedV8()
+    {
+        var fileSha256 = Convert.ToHexStringLower(
+            SHA256.HashData(File.ReadAllBytes(PreservedV8Path)));
+        if (!string.Equals(fileSha256, PreservedV8FileSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The preserved operational MCP protocol 8.0.0 file changed.");
+        }
+    }
+
+    public static OperationalMcpProtocol LoadPreservedV8()
+    {
+        ValidatePreservedV8();
+        return OperationalMcpJson.Read<OperationalMcpProtocol>(PreservedV8Path);
+    }
+
     public static IReadOnlyList<string> PreservedProtocolPaths =>
     [
         PreservedV1Path,
@@ -213,6 +238,7 @@ internal static class OperationalMcpProtocolLoader
         PreservedV5Path,
         PreservedV6Path,
         PreservedV7Path,
+        PreservedV8Path,
     ];
 
     public static string Fingerprint<T>(T value)
@@ -306,7 +332,7 @@ internal static class OperationalMcpProtocolLoader
         OperationalMcpProtocol protocol,
         string caseId)
     {
-        var arms = Enum.GetValues<OperationalMcpArm>();
+        var arms = protocol.ActiveArms.ToArray();
         var seed = SHA256.HashData(
             Encoding.UTF8.GetBytes($"{protocol.ArmOrderSeed}\n{caseId}"));
         for (var index = arms.Length - 1; index > 0; index--)
@@ -325,7 +351,7 @@ internal static class OperationalMcpProtocolLoader
         if (testCase.Family != OperationalMcpFamily.AllocationReproducibility)
         {
             throw new InvalidDataException(
-                "Protocol 8.0.0 is allocation-only.");
+                "Protocol 9.0.0 is allocation-only.");
         }
 
         const string kind = "allocation";
@@ -409,7 +435,7 @@ internal static class OperationalMcpProtocolLoader
                     or "summary"))
         {
             throw new InvalidDataException(
-                "Protocol 8 must explicitly declare typed, non-canonical additive assessor properties.");
+                "Protocol 9 must explicitly declare typed, non-canonical additive assessor properties.");
         }
         _ = protocol.Budgets.ToAgentBudget();
         if (protocol.Budgets.MaximumSuiteWallTimeSeconds is < 1 or > 14_400)
@@ -471,6 +497,23 @@ internal static class OperationalMcpProtocolLoader
                 "The operational MCP decision rule must freeze positive material-cost thresholds.");
         }
 
+        var requiredArms = new[]
+        {
+            OperationalMcpArm.NoStatisticalFields,
+            OperationalMcpArm.CategoricalMedianMad,
+            OperationalMcpArm.CategoricalJaccard,
+        };
+        if (protocol.ActiveArms.Count != requiredArms.Length
+            || protocol.ActiveArms.Distinct().Count() != protocol.ActiveArms.Count
+            || !protocol.ActiveArms.ToHashSet().SetEquals(requiredArms)
+            || !protocol.DecisionRule.ModelVisibleFieldCounts.Keys.ToHashSet()
+                .SetEquals(requiredArms)
+            || protocol.DecisionRule.ModelVisibleFieldCounts.Any(value => value.Value < 0))
+        {
+            throw new InvalidDataException(
+                "Protocol 9 must freeze only control, median/MAD, and Jaccard arms with non-negative model-visible field counts.");
+        }
+
         RequireFingerprint(
             protocol.ExpectedProductFingerprint,
             nameof(protocol.ExpectedProductFingerprint));
@@ -498,7 +541,7 @@ internal static class OperationalMcpProtocolLoader
         if (!eligible.SetEquals([OperationalMcpFamily.AllocationReproducibility]))
         {
             throw new InvalidDataException(
-                "The frozen v8 protocol must contain only allocation reproducibility.");
+                "The frozen v9 protocol must contain only allocation reproducibility.");
         }
 
         foreach (var entry in protocol.Inventory)
@@ -507,7 +550,7 @@ internal static class OperationalMcpProtocolLoader
             {
                 if (entry.ExpectedToolDefinitionFingerprints is null
                     || !entry.ExpectedToolDefinitionFingerprints.Keys.ToHashSet()
-                        .SetEquals(Enum.GetValues<OperationalMcpArm>()))
+                        .SetEquals(protocol.ActiveArms))
                 {
                     throw new InvalidDataException(
                         $"Eligible family '{entry.Family}' must freeze one tool-definition fingerprint per arm.");
@@ -531,10 +574,9 @@ internal static class OperationalMcpProtocolLoader
             || protocol.Projections.Any(projection =>
                 !eligible.Contains(projection.Family)
                 || !projection.Versions.Keys.ToHashSet()
-                    .SetEquals(Enum.GetValues<OperationalMcpArm>())
+                    .SetEquals(protocol.ActiveArms)
                 || !projection.Sources.Keys.ToHashSet()
-                    .SetEquals(Enum.GetValues<OperationalMcpArm>()
-                        .Where(arm => arm != OperationalMcpArm.CompleteCurrent))
+                    .SetEquals(protocol.ActiveArms)
                 || projection.Versions.Values.Any(string.IsNullOrWhiteSpace)
                 || projection.Sources.Values.Any(string.IsNullOrWhiteSpace)
                 || string.IsNullOrWhiteSpace(projection.CurrentSourceCommit)
@@ -544,7 +586,7 @@ internal static class OperationalMcpProtocolLoader
                 || projection.GuardPackage.ToolDefinitionMutations.Count == 0))
         {
             throw new InvalidDataException(
-                "Each eligible family must have one deterministic six-arm projection.");
+                "Each eligible family must have one deterministic three-arm projection.");
         }
 
         foreach (var projection in protocol.Projections)
@@ -618,7 +660,7 @@ internal static class OperationalMcpProtocolLoader
             }
 
             if (!projection.ExpectedFingerprints.Keys.ToHashSet()
-                    .SetEquals(Enum.GetValues<OperationalMcpArm>()))
+                    .SetEquals(protocol.ActiveArms))
             {
                 throw new InvalidDataException(
                     $"Projection '{projection.Family}' must freeze one fingerprint per arm.");
@@ -654,7 +696,7 @@ internal static class OperationalMcpProtocolLoader
             }
 
             var fingerprintMismatches = new List<string>();
-            foreach (var arm in Enum.GetValues<OperationalMcpArm>())
+            foreach (var arm in protocol.ActiveArms)
             {
                 var fingerprint =
                     OperationalMcpResponseProjector.ProjectionFingerprint(
@@ -728,10 +770,11 @@ internal static class OperationalMcpProtocolLoader
                         || value.Id.Contains("v4", StringComparison.Ordinal)
                         || value.Id.Contains("v5", StringComparison.Ordinal)
                         || value.Id.Contains("v6", StringComparison.Ordinal)
-                        || value.Id.Contains("v7", StringComparison.Ordinal)))
+                        || value.Id.Contains("v7", StringComparison.Ordinal)
+                        || value.Id.Contains("v8", StringComparison.Ordinal)))
                 {
                     throw new InvalidDataException(
-                        "The v8 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
+                        "The v9 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
                 }
             }
 
@@ -772,7 +815,7 @@ internal static class OperationalMcpProtocolLoader
             || !developmentClasses.Contains(OperationalMcpCaseClass.HealthyControl))
         {
             throw new InvalidDataException(
-                "The v8 development partition must contain one positive and one healthy allocation case.");
+                "The v9 development partition must contain one positive and one healthy allocation case.");
         }
     }
 
