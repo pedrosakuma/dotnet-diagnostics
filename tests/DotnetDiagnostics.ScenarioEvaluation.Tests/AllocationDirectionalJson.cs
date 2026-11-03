@@ -7,7 +7,7 @@ public static class AllocationDirectionalJson
 {
     public const int CurrentSchemaVersion = 1;
 
-    private static readonly JsonSerializerOptions Options = new()
+    internal static readonly JsonSerializerOptions Options = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         RespectRequiredConstructorParameters = true,

@@ -8,6 +8,9 @@ public static class AllocationDirectionalBounds
     public const int MaximumPairs = 48;
     public const int MaximumRankedRows = 16;
     public const int MaximumFixtureBytes = 1024 * 1024;
+    public const int MaximumRawResponseBytes = 4 * 1024 * 1024;
+    public const int MaximumErrorKindLength = 64;
+    public const int MaximumOperationIdLength = 96;
     public const decimal MaximumAllowedAaRelativeDelta = 0.25m;
     public const decimal MaximumAllowedAaShareMovement = 0.25m;
 }
@@ -50,10 +53,85 @@ public enum AllocationDirectionalDecision
     Inconclusive,
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<AllocationDirectionalAttemptStage>))]
+public enum AllocationDirectionalAttemptStage
+{
+    ProcessStart,
+    ProcessReadiness,
+    Warmup,
+    Workload,
+    McpTransport,
+    McpResponse,
+    Projection,
+    Invariant,
+    Cleanup,
+    Completed,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<AllocationDirectionalFailureCategory>))]
+public enum AllocationDirectionalFailureCategory
+{
+    ProcessStart,
+    ProcessReadiness,
+    Warmup,
+    Workload,
+    McpTransport,
+    McpIsError,
+    McpErrorEnvelope,
+    MalformedEnvelope,
+    WrongSchema,
+    AllocationUnavailable,
+    MissingRequiredField,
+    FieldTypeMismatch,
+    DenominatorInvariant,
+    RetainedValueInvariant,
+    Timeout,
+    Cancellation,
+    Cleanup,
+    UnexpectedHarnessException,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<AllocationDirectionalCleanupState>))]
+public enum AllocationDirectionalCleanupState
+{
+    NotStarted,
+    Succeeded,
+    Failed,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<AllocationDirectionalRawRetentionState>))]
+public enum AllocationDirectionalRawRetentionState
+{
+    NotAvailable,
+    DigestOnly,
+}
+
 public sealed record AllocationDirectionalRankedRow(
     string Key,
     long EstimatedBytes,
     long AllocationTicks);
+
+public sealed record AllocationDirectionalRawResponseEvidence(
+    string Sha256,
+    int ByteCount,
+    AllocationDirectionalRawRetentionState RetentionState,
+    bool Truncated,
+    bool Redacted);
+
+public sealed record AllocationDirectionalAttemptEvidence(
+    string AttemptId,
+    string WorkloadIdentity,
+    AllocationDirectionalAttemptStage Stage,
+    string OperationId,
+    AllocationDirectionalFailureCategory? FailureCategory,
+    bool? IsError,
+    string? SchemaIdentity,
+    string? ErrorKind,
+    string ErrorDetailState,
+    int ErrorDetailByteCount,
+    AllocationDirectionalRawResponseEvidence? RawResponse,
+    string? ExceptionType,
+    AllocationDirectionalCleanupState CleanupState);
 
 public sealed record AllocationDirectionalObservation(
     string AttemptId,
@@ -73,7 +151,11 @@ public sealed record AllocationDirectionalObservation(
     IReadOnlyList<AllocationDirectionalRankedRow> Types,
     IReadOnlyList<AllocationDirectionalRankedRow> Sites,
     string? FailureCategory,
-    IReadOnlyList<string> Provenance);
+    IReadOnlyList<string> Provenance)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AllocationDirectionalAttemptEvidence? AttemptEvidence { get; init; }
+}
 
 public sealed record AllocationDirectionalPair(
     string PairId,

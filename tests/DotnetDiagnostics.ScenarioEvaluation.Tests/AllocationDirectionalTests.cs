@@ -37,8 +37,8 @@ public sealed class AllocationDirectionalTests
             AllocationDirectionalProtocol.FrozenSourcePaths.Count);
         foreach (var sourcePath in AllocationDirectionalProtocol.FrozenSourcePaths)
         {
-            sourceHashes.GetProperty(sourcePath).GetString().Should().Be(
-                AllocationDirectionalProtocol.Sha256(RepositoryPath(sourcePath)));
+            sourceHashes.GetProperty(sourcePath).GetString().Should()
+                .MatchRegex("^[0-9a-f]{64}$");
         }
         root.GetProperty("modelVisibleMeasurementQualityFields").GetArrayLength()
             .Should().Be(0);
@@ -114,6 +114,15 @@ public sealed class AllocationDirectionalTests
             .Should().NotContain("median")
             .And.NotContain("jaccard")
             .And.NotContain("spearman");
+    }
+
+    [Fact]
+    public void FrozenProtocol_CannotBeRerunAfterHarnessCorrection()
+    {
+        var validate = AllocationDirectionalProtocol.ValidateFrozen;
+
+        validate.Should().Throw<InvalidDataException>()
+            .WithMessage("*Frozen source hash mismatch*");
     }
 
     [Fact]

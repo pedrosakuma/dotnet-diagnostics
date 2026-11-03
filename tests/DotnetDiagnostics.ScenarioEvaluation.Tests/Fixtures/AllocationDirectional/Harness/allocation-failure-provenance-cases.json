@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 1,
+  "projectionCases": [
+    {
+      "name": "is-error",
+      "isError": true,
+      "expectedCategory": "mcpIsError",
+      "response": {
+        "error": {
+          "kind": "PermissionDenied",
+          "message": "redacted by the harness",
+          "detail": "C:\\private\\secret"
+        }
+      }
+    },
+    {
+      "name": "is-error-plain-text",
+      "isError": true,
+      "expectedCategory": "mcpIsError",
+      "raw": "collect_sample failed: InvalidOperationException"
+    },
+    {
+      "name": "is-error-json-array",
+      "isError": true,
+      "expectedCategory": "mcpIsError",
+      "raw": "[\"failed\"]"
+    },
+    {
+      "name": "is-error-oversize",
+      "isError": true,
+      "expectedCategory": "mcpIsError",
+      "rawKind": "oversize"
+    },
+    {
+      "name": "root-error-envelope",
+      "isError": false,
+      "expectedCategory": "mcpErrorEnvelope",
+      "response": {
+        "error": {
+          "kind": "ProcessNotFound",
+          "message": "redacted by the harness",
+          "detail": "target-controlled-name"
+        }
+      }
+    },
+    {
+      "name": "allocation-unavailable",
+      "isError": false,
+      "expectedCategory": "allocationUnavailable",
+      "response": {
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": null
+        }
+      }
+    },
+    {
+      "name": "malformed-envelope",
+      "isError": false,
+      "expectedCategory": "malformedEnvelope",
+      "raw": "{not-json"
+    },
+    {
+      "name": "wrong-schema",
+      "isError": false,
+      "expectedCategory": "wrongSchema",
+      "response": {
+        "error": null,
+        "data": {
+          "kind": "cpu",
+          "allocation": {
+            "totalEvents": 1,
+            "totalBytes": 1,
+            "topByBytes": [],
+            "topBySite": []
+          }
+        }
+      }
+    },
+    {
+      "name": "missing-required-field",
+      "isError": false,
+      "expectedCategory": "missingRequiredField",
+      "response": {
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "totalEvents": 1,
+            "topByBytes": [],
+            "topBySite": []
+          }
+        }
+      }
+    },
+    {
+      "name": "field-type-mismatch",
+      "isError": false,
+      "expectedCategory": "fieldTypeMismatch",
+      "response": {
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "totalEvents": 1,
+            "totalBytes": "one",
+            "topByBytes": [],
+            "topBySite": []
+          }
+        }
+      }
+    }
+  ],
+  "externalCases": [
+    {
+      "name": "process-start",
+      "stage": "processStart",
+      "operationId": "process.start-published",
+      "expectedCategory": "processStart"
+    },
+    {
+      "name": "process-readiness",
+      "stage": "processReadiness",
+      "operationId": "process.http-readiness",
+      "expectedCategory": "processReadiness"
+    },
+    {
+      "name": "warmup",
+      "stage": "warmup",
+      "operationId": "workload.warmup-http",
+      "expectedCategory": "warmup"
+    },
+    {
+      "name": "workload",
+      "stage": "workload",
+      "operationId": "workload.capture-http",
+      "expectedCategory": "workload"
+    },
+    {
+      "name": "mcp-transport",
+      "stage": "mcpTransport",
+      "operationId": "mcp.collect-sample-await",
+      "expectedCategory": "mcpTransport"
+    },
+    {
+      "name": "denominator-invariant",
+      "stage": "invariant",
+      "operationId": "invariant.workload-denominator",
+      "expectedCategory": "denominatorInvariant"
+    },
+    {
+      "name": "retained-value-invariant",
+      "stage": "invariant",
+      "operationId": "invariant.retained-value",
+      "expectedCategory": "retainedValueInvariant"
+    },
+    {
+      "name": "timeout",
+      "stage": "mcpTransport",
+      "operationId": "mcp.collect-sample-await",
+      "expectedCategory": "timeout"
+    },
+    {
+      "name": "cancellation",
+      "stage": "workload",
+      "operationId": "workload.capture-http",
+      "expectedCategory": "cancellation"
+    },
+    {
+      "name": "cleanup",
+      "stage": "cleanup",
+      "operationId": "cleanup.owned-resources",
+      "expectedCategory": "cleanup"
+    },
+    {
+      "name": "unexpected-harness-exception",
+      "stage": "projection",
+      "operationId": "projection.unexpected",
+      "expectedCategory": "unexpectedHarnessException"
+    }
+  ]
+}

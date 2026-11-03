@@ -165,6 +165,45 @@ collector is directionally safe or unsafe. The run did use the real MCP
 surface, and its inability to produce assessable frozen evidence is itself the
 feasibility outcome.
 
+## Post-run harness reliability correction
+
+Issue [#1377](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1377)
+corrected the research harness without rerunning, replacing, or reclassifying
+any frozen observation. The corrected projector:
+
+- requires an object root and object `data` envelope;
+- requires the `data.kind` discriminator to be the string `allocation`;
+- reads the allocation payload only from `data.allocation`;
+- validates `totalBytes`, `totalEvents`, `topByBytes`, `topBySite`, and every
+  retained row before constructing a successful observation; and
+- classifies malformed envelopes, wrong schemas, unavailable payloads, missing
+  fields, and type mismatches explicitly instead of treating broad
+  `GetProperty` exceptions as semantic evidence.
+
+Deterministic non-empirical fixtures cover `primary`, `changed`, `increased`,
+`low`, `periodic-a`, `periodic-b`, zero-weight, and missing-attribution
+success envelopes. Separate replay fixtures cover process start/readiness,
+warmup, workload, MCP transport, `CallToolResult.IsError`, structured root
+errors, projection/schema failures, denominator and retained-value invariants,
+timeout, cancellation, cleanup, and unexpected harness exceptions. No target
+process or MCP protocol was executed for this correction.
+
+New attempt provenance is additive and optional, so the five frozen artifacts
+and their canonical fingerprints below remain byte-for-byte unchanged. For a
+future protocol it records exactly one failure category plus the source-owned
+stage/operation identifier, `IsError`, the validated schema identity, a
+sanitized bounded error kind, redacted-detail state/byte count, raw-response
+SHA-256 and byte count with digest-only retention, exception type, and cleanup
+state. It never retains unrestricted messages, response payloads, credentials,
+paths, stacks, symbols, or target-controlled names. The v2 append-only ledger
+requires exactly one start row and one terminal row for every predeclared live
+attempt and rejects retry/replacement accounting.
+
+The original protocol's source hashes intentionally no longer match the
+corrected harness. `ValidateFrozen()` therefore rejects any attempt to rerun
+the #1350 protocol. A future empirical study must freeze a separately reviewed
+protocol and cannot reuse these results as successful evidence.
+
 ## Gate evaluation
 
 The evaluator first requires three valid healthy A/A pairs. It received zero.

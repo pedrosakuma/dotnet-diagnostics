@@ -1,0 +1,292 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "primary",
+      "response": {
+        "summary": "Allocation sample completed.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "cpu": null,
+          "offCpu": null,
+          "allocation": {
+            "processId": 101,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 20,
+            "totalBytes": 288000,
+            "topByBytes": [
+              {
+                "typeName": "System.Byte[]",
+                "totalBytes": 220000,
+                "eventCount": 15,
+                "dominantKind": "small",
+                "identity": null
+              }
+            ],
+            "topByCount": [],
+            "topBySite": [
+              {
+                "frame": {
+                  "module": "BadCodeSample.dll",
+                  "method": "AllocationShapeWorkload.Primary"
+                },
+                "totalBytes": 220000,
+                "eventCount": 15,
+                "dominantKind": "small",
+                "identity": null
+              }
+            ]
+          }
+        },
+        "signals": null,
+        "handle": "allocation-sample:primary",
+        "handleExpiresAt": "2026-11-03T12:05:00Z",
+        "handleExpiresInSeconds": 300,
+        "resolvedProcess": null,
+        "cancelled": false
+      }
+    },
+    {
+      "name": "changed",
+      "response": {
+        "summary": "Allocation sample completed.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "processId": 102,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 20,
+            "totalBytes": 288000,
+            "topByBytes": [
+              {
+                "typeName": "System.Char[]",
+                "totalBytes": 220000,
+                "eventCount": 15,
+                "dominantKind": "small"
+              }
+            ],
+            "topByCount": [],
+            "topBySite": [
+              {
+                "frame": {
+                  "module": "BadCodeSample.dll",
+                  "method": "AllocationShapeWorkload.Changed"
+                },
+                "totalBytes": 220000,
+                "eventCount": 15,
+                "dominantKind": "small"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "increased",
+      "response": {
+        "summary": "Allocation sample completed.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "processId": 103,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 42,
+            "totalBytes": 576000,
+            "topByBytes": [
+              {
+                "typeName": "System.Byte[]",
+                "totalBytes": 500000,
+                "eventCount": 36,
+                "dominantKind": "small"
+              }
+            ],
+            "topByCount": [],
+            "topBySite": [
+              {
+                "frame": {
+                  "module": "BadCodeSample.dll",
+                  "method": "AllocationShapeWorkload.Increased"
+                },
+                "totalBytes": 500000,
+                "eventCount": 36,
+                "dominantKind": "small"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "low",
+      "response": {
+        "summary": "Allocation sample completed.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "processId": 104,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 6,
+            "totalBytes": 64000,
+            "topByBytes": [
+              {
+                "typeName": "System.Byte[]",
+                "totalBytes": 64000,
+                "eventCount": 6,
+                "dominantKind": "small"
+              }
+            ],
+            "topByCount": [],
+            "topBySite": [
+              {
+                "frame": {
+                  "module": "BadCodeSample.dll",
+                  "method": "AllocationShapeWorkload.Low"
+                },
+                "totalBytes": 64000,
+                "eventCount": 6,
+                "dominantKind": "small"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "periodic-a",
+      "response": {
+        "summary": "Allocation sample completed.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "processId": 105,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 18,
+            "totalBytes": 192000,
+            "topByBytes": [
+              {
+                "typeName": "System.Int32[]",
+                "totalBytes": 150000,
+                "eventCount": 14,
+                "dominantKind": "small"
+              }
+            ],
+            "topByCount": [],
+            "topBySite": [
+              {
+                "frame": {
+                  "module": "BadCodeSample.dll",
+                  "method": "AllocationShapeWorkload.PeriodicA"
+                },
+                "totalBytes": 150000,
+                "eventCount": 14,
+                "dominantKind": "small"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "periodic-b",
+      "response": {
+        "summary": "Allocation sample completed.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "processId": 106,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 18,
+            "totalBytes": 192000,
+            "topByBytes": [
+              {
+                "typeName": "System.String",
+                "totalBytes": 150000,
+                "eventCount": 14,
+                "dominantKind": "small"
+              }
+            ],
+            "topByCount": [],
+            "topBySite": [
+              {
+                "frame": {
+                  "module": "BadCodeSample.dll",
+                  "method": "AllocationShapeWorkload.PeriodicB"
+                },
+                "totalBytes": 150000,
+                "eventCount": 14,
+                "dominantKind": "small"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "zero-weight",
+      "response": {
+        "summary": "Allocation sample completed with no observed allocation ticks.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "processId": 107,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 0,
+            "totalBytes": 0,
+            "topByBytes": [],
+            "topByCount": [],
+            "topBySite": []
+          }
+        }
+      }
+    },
+    {
+      "name": "missing-attribution",
+      "response": {
+        "summary": "Allocation sample completed without site attribution.",
+        "hints": [],
+        "error": null,
+        "data": {
+          "kind": "allocation",
+          "allocation": {
+            "processId": 108,
+            "startedAt": "2026-11-03T12:00:00Z",
+            "duration": "00:00:04",
+            "totalEvents": 12,
+            "totalBytes": 128000,
+            "topByBytes": [
+              {
+                "typeName": "System.Byte[]",
+                "totalBytes": 128000,
+                "eventCount": 12,
+                "dominantKind": "small"
+              }
+            ],
+            "topByCount": [],
+            "topBySite": []
+          }
+        }
+      }
+    }
+  ]
+}
