@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
@@ -14,6 +15,9 @@ internal sealed record OperationalAssessmentEvidenceContext(
 internal static class OperationalMcpAssessor
 {
     internal const int MaximumFailureEvidenceBytes = 16_384;
+
+    private static readonly JsonSerializerOptions DiagnosticJsonOptions =
+        CreateDiagnosticJsonOptions();
 
     internal const string SystemPrompt =
         """
@@ -166,7 +170,12 @@ internal static class OperationalMcpAssessor
             var parsed = Parse(
                 turn.AssistantContent,
                 investigation.Diagnosis?.Claims.Count ?? 0,
-                additiveProperties);
+                additiveProperties,
+                maximumTransportOutputBytes,
+                Math.Min(
+                    OperationalAssessmentValidator.MaximumDiagnosticBytes,
+                    Math.Max(0, evidenceContext.MaximumRetainedBytes / 2)));
+            var ignoredAnnotationBytes = DiagnosticBytes(parsed.IgnoredAnnotations);
             watch.Stop();
             var transportOutputBytes = turn.TransportOutputBytes > 0
                 ? turn.TransportOutputBytes
@@ -199,6 +208,11 @@ internal static class OperationalMcpAssessor
                 TransportOutputBytes = transportOutputBytes,
                 RawResponseSha256 = BlindedDiagnosticToolGateway.Sha256(turn.RawResponse),
                 ClaimTextAliasNormalized = parsed.ClaimTextAliasNormalized,
+                IgnoredAnnotations = parsed.IgnoredAnnotations,
+                IgnoredAnnotationCount = parsed.IgnoredAnnotationCount,
+                IgnoredAnnotationsTruncated = parsed.IgnoredAnnotationsTruncated,
+                IgnoredAnnotationBytes = ignoredAnnotationBytes,
+                RetainedArtifactBytes = ignoredAnnotationBytes,
             };
         }
 
@@ -344,7 +358,15 @@ internal static class OperationalMcpAssessor
                     turn);
             }
 
-            var parsed = Parse(turn.AssistantContent, claimCount: 1, additiveProperties);
+            var parsed = Parse(
+                turn.AssistantContent,
+                claimCount: 1,
+                additiveProperties,
+                maximumTransportOutputBytes,
+                Math.Min(
+                    OperationalAssessmentValidator.MaximumDiagnosticBytes,
+                    Math.Max(0, evidenceContext.MaximumRetainedBytes / 2)));
+            var ignoredAnnotationBytes = DiagnosticBytes(parsed.IgnoredAnnotations);
             watch.Stop();
             return new OperationalMcpPreflightReport(
                 Stage(
@@ -361,6 +383,11 @@ internal static class OperationalMcpAssessor
                 BlindedDiagnosticToolGateway.Sha256(turn.RawResponse))
             {
                 ClaimTextAliasNormalized = parsed.ClaimTextAliasNormalized,
+                IgnoredAnnotations = parsed.IgnoredAnnotations,
+                IgnoredAnnotationCount = parsed.IgnoredAnnotationCount,
+                IgnoredAnnotationsTruncated = parsed.IgnoredAnnotationsTruncated,
+                IgnoredAnnotationBytes = ignoredAnnotationBytes,
+                RetainedArtifactBytes = ignoredAnnotationBytes,
             };
         }
         catch (OperationCanceledException)
@@ -453,7 +480,20 @@ internal static class OperationalMcpAssessor
         return JsonSerializer.Serialize(payload, OperationalMcpJson.Options);
     }
 
-    private static ParsedAssessment Parse(
+    private static OperationalParsedAssessment Parse(
+        string json,
+        int claimCount,
+        IReadOnlyDictionary<string, string>? additiveProperties,
+        int maximumBytes,
+        int maximumDiagnosticBytes)
+        => OperationalAssessmentValidator.Parse(
+            json,
+            claimCount,
+            additiveProperties,
+            maximumBytes,
+            maximumDiagnosticBytes);
+
+    private static ParsedAssessment ParseLegacy(
         string json,
         int claimCount,
         IReadOnlyDictionary<string, string>? additiveProperties)
@@ -1034,11 +1074,32 @@ internal static class OperationalMcpAssessor
         var failure = FailureInfo(exception);
         var assistantContent = turn.AssistantContent ?? string.Empty;
         var maximumRetainedBytes = Math.Max(0, context.MaximumRetainedBytes);
+        var retainedDiagnostics = failure.Diagnostics;
+        var diagnosticBytes = DiagnosticBytes(retainedDiagnostics);
+        while (diagnosticBytes > maximumRetainedBytes
+            && retainedDiagnostics.Count > 0)
+        {
+            retainedDiagnostics = retainedDiagnostics
+                .Take(retainedDiagnostics.Count - 1)
+                .ToArray();
+            diagnosticBytes = DiagnosticBytes(retainedDiagnostics);
+        }
+
+        var diagnosticsTruncated = failure.DiagnosticsTruncated
+            || retainedDiagnostics.Count < failure.Diagnostics.Count;
+        failure = failure with
+        {
+            Diagnostics = retainedDiagnostics,
+            DiagnosticsTruncated = diagnosticsTruncated,
+        };
         var replayJson = CreateReplayJson(
             assistantContent,
             failure,
-            maximumRetainedBytes,
-            out var truncated);
+            maximumRetainedBytes - diagnosticBytes,
+            out var replayTruncated);
+        var replayBytes = replayJson is null
+            ? 0
+            : Encoding.UTF8.GetByteCount(replayJson);
         return new OperationalAssessmentFailureEvidence(
             context.ProtocolId,
             context.ProtocolFingerprint,
@@ -1052,29 +1113,76 @@ internal static class OperationalMcpAssessor
             BlindedDiagnosticToolGateway.Sha256(assistantContent),
             Encoding.UTF8.GetByteCount(assistantContent),
             replayJson,
-            replayJson is null ? 0 : Encoding.UTF8.GetByteCount(replayJson),
-            truncated,
-            Redacted: true);
+            checked(diagnosticBytes + replayBytes),
+            replayTruncated || diagnosticsTruncated,
+            Redacted: true)
+        {
+            Diagnostics = retainedDiagnostics,
+            DiagnosticCount = failure.DiagnosticCount,
+            DiagnosticsTruncated = diagnosticsTruncated,
+            AdditionalPropertyCount = failure.AdditionalPropertyCount,
+            ReplayBytes = replayBytes,
+            DiagnosticBytes = diagnosticBytes,
+        };
     }
 
     private static AssessmentFailureInfo FailureInfo(Exception exception)
         => exception switch
         {
+            OperationalAssessmentValidationException validation => new(
+                validation.FirstFailure.Category,
+                validation.FirstFailure.JsonPath,
+                validation.FirstFailure.PropertyName,
+                validation.FirstFailure.ValueKind,
+                validation.Diagnostics,
+                validation.DiagnosticCount,
+                validation.DiagnosticsTruncated,
+                validation.AdditionalPropertyCount),
             AssessmentValidationException validation => new(
                 validation.Category,
                 validation.JsonPath,
                 validation.PropertyName,
-                validation.ValueKind?.ToString()),
+                validation.ValueKind?.ToString(),
+                [
+                    new OperationalAssessmentDiagnostic(
+                        validation.Category,
+                        validation.JsonPath,
+                        validation.PropertyName,
+                        validation.ValueKind?.ToString()),
+                ],
+                1,
+                false,
+                0),
             JsonException json => new(
                 OperationalAssessmentFailureCategory.InvalidJson,
-                json.Path,
+                "$",
                 null,
-                null),
+                null,
+                [
+                    new OperationalAssessmentDiagnostic(
+                        OperationalAssessmentFailureCategory.InvalidJson,
+                        "$",
+                        null,
+                        null),
+                ],
+                1,
+                false,
+                0),
             _ => new(
                 OperationalAssessmentFailureCategory.SchemaValidation,
+                "$",
                 null,
                 null,
-                null),
+                [
+                    new OperationalAssessmentDiagnostic(
+                        OperationalAssessmentFailureCategory.SchemaValidation,
+                        "$",
+                        null,
+                        null),
+                ],
+                1,
+                false,
+                0),
         };
 
     private static string? CreateReplayJson(
@@ -1085,9 +1193,26 @@ internal static class OperationalMcpAssessor
     {
         string canonical;
         var canonicalResponseTruncated = false;
+        if (failure.Category is OperationalAssessmentFailureCategory.SizeLimit
+            or OperationalAssessmentFailureCategory.DepthLimit)
+        {
+            truncated = true;
+            var boundedEnvelope = ReplayEnvelope(
+                failure,
+                canonicalResponseTruncated: true);
+            return Encoding.UTF8.GetByteCount(boundedEnvelope) <= maximumBytes
+                ? boundedEnvelope
+                : null;
+        }
+
         try
         {
-            using var document = JsonDocument.Parse(assistantContent);
+            using var document = JsonDocument.Parse(
+                assistantContent,
+                new JsonDocumentOptions
+                {
+                    MaxDepth = OperationalAssessmentValidator.MaximumJsonDepth,
+                });
             var stringTokens = new Dictionary<string, string>(StringComparer.Ordinal);
             var propertyTokens = new Dictionary<string, string>(StringComparer.Ordinal);
             canonical = Canonicalize(
@@ -1099,7 +1224,10 @@ internal static class OperationalMcpAssessor
                 ?.ToJsonString()
                 ?? "null";
         }
-        catch (JsonException)
+        catch (Exception exception) when (
+            exception is JsonException
+            or ArgumentException
+            or InvalidOperationException)
         {
             canonicalResponseTruncated = true;
             canonical = ReplayEnvelope(failure, canonicalResponseTruncated: true);
@@ -1118,6 +1246,24 @@ internal static class OperationalMcpAssessor
             : null;
     }
 
+    private static int DiagnosticBytes(
+        IReadOnlyList<OperationalAssessmentDiagnostic> diagnostics)
+        => diagnostics.Count == 0
+            ? 0
+            : JsonSerializer.SerializeToUtf8Bytes(
+                diagnostics,
+                DiagnosticJsonOptions).Length;
+
+    private static JsonSerializerOptions CreateDiagnosticJsonOptions()
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        };
+        options.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        return options;
+    }
+
     private static JsonNode? Canonicalize(
         JsonElement element,
         string? propertyName,
@@ -1131,7 +1277,7 @@ internal static class OperationalMcpAssessor
                     .Select(property => KeyValuePair.Create<string, JsonNode?>(
                         CanonicalPropertyName(
                             property.Name,
-                            failure.PropertyName,
+                            failure.PreservedPropertyNames,
                             propertyTokens),
                         Canonicalize(
                             property.Value,
@@ -1162,10 +1308,10 @@ internal static class OperationalMcpAssessor
 
     private static string CanonicalPropertyName(
         string value,
-        string? failurePropertyName,
+        IReadOnlySet<string> preservedPropertyNames,
         Dictionary<string, string> propertyTokens)
     {
-        if (value == failurePropertyName
+        if (preservedPropertyNames.Contains(value)
             || value is "claims"
                 or "index"
                 or "support"
@@ -1282,9 +1428,21 @@ internal static class OperationalMcpAssessor
 
     private sealed record AssessmentFailureInfo(
         OperationalAssessmentFailureCategory Category,
-        string? JsonPath,
+        string JsonPath,
         string? PropertyName,
-        string? ValueKind);
+        string? ValueKind,
+        IReadOnlyList<OperationalAssessmentDiagnostic> Diagnostics,
+        int DiagnosticCount,
+        bool DiagnosticsTruncated,
+        int AdditionalPropertyCount)
+    {
+        public IReadOnlySet<string> PreservedPropertyNames
+            => Diagnostics
+                .Select(value => value.PropertyName)
+                .Where(value => value is not null)
+                .Select(value => value!)
+                .ToHashSet(StringComparer.Ordinal);
+    }
 
     private sealed class AssessmentValidationException(
         OperationalAssessmentFailureCategory category,

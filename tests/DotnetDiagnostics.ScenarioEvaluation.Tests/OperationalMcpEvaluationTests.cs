@@ -511,7 +511,19 @@ public sealed class OperationalMcpProtocolTests
                 assessment.ClaimTextAliasNormalized.Should().Be(
                     testCase.GetProperty("expectedAliasNormalized").GetBoolean());
                 assessment.FailureEvidence.Should().BeNull();
-                assessment.RetainedArtifactBytes.Should().Be(0);
+                if (testCase.TryGetProperty("expectedPath", out var expectedPath))
+                {
+                    assessment.IgnoredAnnotationCount.Should().Be(1);
+                    assessment.IgnoredAnnotations.Should().ContainSingle()
+                        .Which.JsonPath.Should().Be(expectedPath.GetString());
+                    assessment.IgnoredAnnotationBytes.Should().BeGreaterThan(0);
+                    assessment.RetainedArtifactBytes.Should().Be(
+                        assessment.IgnoredAnnotationBytes);
+                }
+                else
+                {
+                    assessment.RetainedArtifactBytes.Should().Be(0);
+                }
                 continue;
             }
 
@@ -552,8 +564,8 @@ public sealed class OperationalMcpProtocolTests
                 "private-",
                 caseId);
             assessment.FailureEvidence.RetainedBytes.Should().Be(
-                System.Text.Encoding.UTF8.GetByteCount(
-                    assessment.FailureEvidence.ReplayJson!),
+                assessment.FailureEvidence.ReplayBytes
+                + assessment.FailureEvidence.DiagnosticBytes,
                 caseId);
             assessment.RetainedArtifactBytes.Should().Be(
                 assessment.FailureEvidence.RetainedBytes,
@@ -624,75 +636,277 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public async Task Assessor_UnexpectedPropertyRetainsBoundedRedactedReplayEvidence()
+    public async Task Assessor_Protocol9PostureShapeIsIgnoredOnlyAfterCanonicalValidation()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var fixturePath = Path.Combine(
-            AppContext.BaseDirectory,
-            "OperationalMcp",
-            "operational-mcp-assessor-conformance-v7.fixture.json");
-        using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
-        var cases = fixture.RootElement.GetProperty("cases")
-            .EnumerateArray()
-            .Where(testCase =>
-                testCase.TryGetProperty("expectedPath", out _)
-                && testCase.GetProperty("id").GetString()
-                    != "unreconstructable-protocol7-nested-text-equivalent")
-            .ToArray();
+        const string response =
+            """
+            {"claims":[{"index":0,"support":"supported","rationale":"Synthetic rationale.","posture":"observed"}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Synthetic summary."}
+            """;
 
-        foreach (var testCase in cases)
-        {
-            var response = testCase.GetProperty("response").GetRawText();
-            var turn = new AgentModelTurn(
-                $"{{\"transport\":\"synthetic\",\"assessment\":{response}}}",
+        var assessment = await OperationalMcpAssessor.AssessAsync(
+            protocol.Cases[0],
+            CreateInvestigation(),
+            ModelConfiguration(),
+            new SingleTurnTransport(new AgentModelTurn(
+                response,
                 response,
                 [],
                 new AgentModelUsage(null, null, null),
-                null)
-            {
-                TransportOutputBytes = 4096,
-            };
-            var assessment = await OperationalMcpAssessor.AssessAsync(
-                protocol.Cases[0],
-                CreateInvestigation(),
-                ModelConfiguration(),
-                new SingleTurnTransport(turn),
-                maximumWallTimeSeconds: 5,
-                maximumInputBytes: 32_768,
-                maximumTransportOutputBytes: 8_192,
-                protocol.AssessorAdditiveProperties,
-                new OperationalAssessmentEvidenceContext(
-                    protocol.ProtocolId,
-                    OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
-                    $"fixture/{testCase.GetProperty("id").GetString()}",
-                    OperationalMcpAssessor.MaximumFailureEvidenceBytes),
-                CancellationToken.None);
+                null)),
+            maximumWallTimeSeconds: 5,
+            maximumInputBytes: 32_768,
+            maximumTransportOutputBytes: 8_192,
+            protocol.AssessorAdditiveProperties,
+            new OperationalAssessmentEvidenceContext(
+                protocol.ProtocolId,
+                OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                "fixture/protocol9-posture",
+                OperationalMcpAssessor.MaximumFailureEvidenceBytes),
+            CancellationToken.None);
 
-            assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
-            assessment.Stage.Detail.Should().Contain(
-                testCase.GetProperty("expectedPath").GetString());
-            assessment.Stage.Detail.Should().Contain(
-                testCase.GetProperty("expectedValueKind").GetString());
-            assessment.FailureEvidence.Should().NotBeNull();
-            assessment.FailureEvidence!.Category.Should().Be(
-                OperationalAssessmentFailureCategory.UnexpectedProperty);
-            assessment.FailureEvidence.JsonPath.Should().Be(
-                testCase.GetProperty("expectedPath").GetString());
-            assessment.FailureEvidence.ValueKind.Should().Be(
-                testCase.GetProperty("expectedValueKind").GetString());
-            assessment.FailureEvidence.RawResponseSha256.Should().HaveLength(64);
-            assessment.FailureEvidence.RawResponseBytes.Should().Be(
-                System.Text.Encoding.UTF8.GetByteCount(turn.RawResponse));
-            assessment.FailureEvidence.AssistantContentSha256.Should().HaveLength(64);
-            assessment.FailureEvidence.AssistantContentBytes.Should().Be(
-                System.Text.Encoding.UTF8.GetByteCount(response));
-            assessment.FailureEvidence.Redacted.Should().BeTrue();
-            assessment.FailureEvidence.Truncated.Should().BeFalse();
-            assessment.FailureEvidence.ReplayJson.Should().NotContain(
-                "Synthetic unexpected");
-            assessment.RetainedArtifactBytes.Should().Be(
-                assessment.FailureEvidence.RetainedBytes);
+        assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        assessment.Claims.Should().ContainSingle()
+            .Which.Rationale.Should().Be("Synthetic rationale.");
+        assessment.IgnoredAnnotationCount.Should().Be(1);
+        assessment.IgnoredAnnotations.Should().ContainSingle()
+            .Which.Should().Be(new OperationalAssessmentDiagnostic(
+                OperationalAssessmentFailureCategory.AdditionalProperty,
+                "$.claims[0].posture",
+                "posture",
+                "String"));
+        assessment.IgnoredAnnotationsTruncated.Should().BeFalse();
+        assessment.FailureEvidence.Should().BeNull();
+        assessment.IgnoredAnnotationBytes.Should().BeGreaterThan(0);
+        assessment.RetainedArtifactBytes.Should().Be(
+            assessment.IgnoredAnnotationBytes);
+    }
+
+    [Fact]
+    public async Task Assessor_AnnotationBeforeCanonicalErrorsReportsBoundedMultiErrorInventory()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        const string response =
+            """
+            {"claims":[{"index":0,"support":"definitelySupported","rationale":"private-canonical","text":"private-alias","posture":"private-posture"}],"uncertainty":"appropriate","uncertaintyRationale":"private-uncertainty","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[]}
+            """;
+        var context = new OperationalAssessmentEvidenceContext(
+            protocol.ProtocolId,
+            OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+            "fixture/protocol9-posture-multi-error",
+            OperationalMcpAssessor.MaximumFailureEvidenceBytes);
+
+        var assessment = await OperationalMcpAssessor.AssessAsync(
+            protocol.Cases[0],
+            CreateInvestigation(),
+            ModelConfiguration(),
+            new SingleTurnTransport(new AgentModelTurn(
+                response,
+                response,
+                [],
+                new AgentModelUsage(null, null, null),
+                null)),
+            maximumWallTimeSeconds: 5,
+            maximumInputBytes: 32_768,
+            maximumTransportOutputBytes: 8_192,
+            protocol.AssessorAdditiveProperties,
+            context,
+            CancellationToken.None);
+
+        assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        assessment.Stage.Detail.Should().Contain("Validation found");
+        assessment.FailureEvidence.Should().NotBeNull();
+        assessment.FailureEvidence!.AdditionalPropertyCount.Should().Be(1);
+        assessment.FailureEvidence.DiagnosticCount.Should().BeGreaterThanOrEqualTo(4);
+        assessment.FailureEvidence.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.AdditionalProperty
+            && value.JsonPath == "$.claims[0].posture"
+            && value.ValueKind == "String");
+        assessment.FailureEvidence.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.InvalidValue
+            && value.JsonPath == "$.claims[0].support");
+        assessment.FailureEvidence.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.ContradictoryValue
+            && value.JsonPath == "$.claims[0].text");
+        assessment.FailureEvidence.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.MissingProperty
+            && value.JsonPath == "$.summary");
+        assessment.FailureEvidence.ReplayJson.Should().Contain("\"posture\"");
+        assessment.FailureEvidence.ReplayJson.Should().NotContain("private-");
+        assessment.FailureEvidence.RetainedBytes.Should().Be(
+            assessment.FailureEvidence.ReplayBytes
+            + assessment.FailureEvidence.DiagnosticBytes);
+        assessment.RetainedArtifactBytes.Should().Be(
+            assessment.FailureEvidence.RetainedBytes);
+
+        var replay = await OperationalMcpAssessor.AssessAsync(
+            protocol.Cases[0],
+            CreateInvestigation(),
+            ModelConfiguration(),
+            new SingleTurnTransport(new AgentModelTurn(
+                assessment.FailureEvidence.ReplayJson!,
+                assessment.FailureEvidence.ReplayJson!,
+                [],
+                new AgentModelUsage(null, null, null),
+                null)),
+            maximumWallTimeSeconds: 5,
+            maximumInputBytes: 32_768,
+            maximumTransportOutputBytes: 8_192,
+            protocol.AssessorAdditiveProperties,
+            context,
+            CancellationToken.None);
+
+        replay.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        replay.FailureEvidence.Should().NotBeNull();
+        replay.FailureEvidence!.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.AdditionalProperty
+            && value.JsonPath == "$.claims[0].posture");
+    }
+
+    [Fact]
+    public async Task Assessor_IgnoredAnnotationsLeaveCanonicalScoringBytesIdentical()
+    {
+        const string canonical =
+            """
+            {"claims":[{"index":0,"support":"partiallySupported","rationale":"Synthetic rationale."}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[{"claimIndex":0,"category":"exactness","rationale":"Synthetic finding."}],"usefulNextSteps":["Inspect retained evidence."],"unhelpfulNextSteps":[],"summary":"Synthetic summary."}
+            """;
+        const string annotated =
+            """
+            {"customer-acme-secret":"private-root","claims":[{"index":0,"support":"partiallySupported","rationale":"Synthetic rationale.","posture":"private-claim"}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[{"claimIndex":0,"category":"exactness","rationale":"Synthetic finding.","confidence":"private-finding"}],"usefulNextSteps":["Inspect retained evidence."],"unhelpfulNextSteps":[],"summary":"Synthetic summary.","nextSteps":["private-typed-addition"]}
+            """;
+
+        var withoutAnnotations = await AssessResponseAsync(canonical);
+        var withAnnotations = await AssessResponseAsync(annotated);
+
+        withoutAnnotations.Stage.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        withAnnotations.Stage.Status.Should().Be(AgentHarnessStageStatus.Passed);
+        withAnnotations.IgnoredAnnotationCount.Should().Be(4);
+        withAnnotations.IgnoredAnnotations.Should().Contain(value =>
+            value.JsonPath == "$.claims[0].posture"
+            && value.PropertyName == "posture");
+        withAnnotations.IgnoredAnnotations.Should().Contain(value =>
+            value.JsonPath == "$.nextSteps"
+            && value.PropertyName == "nextSteps");
+        withAnnotations.IgnoredAnnotations
+            .Where(value => value.PropertyName!.StartsWith(
+                "annotation_",
+                StringComparison.Ordinal))
+            .Should().HaveCount(2);
+        withAnnotations.IgnoredAnnotationBytes.Should().BeGreaterThan(0);
+        withAnnotations.RetainedArtifactBytes.Should().Be(
+            withAnnotations.IgnoredAnnotationBytes);
+        JsonSerializer.Serialize(
+                withAnnotations.IgnoredAnnotations,
+                OperationalMcpJson.Options)
+            .Should().NotContain("customer-acme-secret");
+        CanonicalScoringBytes(withoutAnnotations).Should().Equal(
+            CanonicalScoringBytes(withAnnotations));
+    }
+
+    [Fact]
+    public async Task Assessor_NextStepObjectsRemainStrictlyInvalid()
+    {
+        const string response =
+            """
+            {"claims":[{"index":0,"support":"supported","rationale":"Synthetic rationale."}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[],"usefulNextSteps":[{"text":"private-step","note":"private-note"}],"unhelpfulNextSteps":[],"summary":"Synthetic summary."}
+            """;
+
+        var assessment = await AssessResponseAsync(response);
+
+        assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        assessment.FailureEvidence.Should().NotBeNull();
+        assessment.FailureEvidence!.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.InvalidValueKind
+            && value.JsonPath == "$.usefulNextSteps[0]");
+        assessment.FailureEvidence.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.UnexpectedProperty
+            && value.JsonPath == "$.usefulNextSteps[0].text");
+        assessment.FailureEvidence.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.UnexpectedProperty
+            && value.JsonPath.StartsWith(
+                "$.usefulNextSteps[0].annotation_",
+                StringComparison.Ordinal));
+        assessment.FailureEvidence.ReplayJson.Should().NotContain("private-");
+    }
+
+    [Theory]
+    [InlineData(
+        """{"claims":[{"index":0,"support":"supported","support":"unsupported","rationale":"Synthetic rationale."}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Synthetic summary."}""",
+        OperationalAssessmentFailureCategory.DuplicateProperty,
+        "$.claims[0].support")]
+    [InlineData(
+        """{"claims":[{"index":0,"support":"supported","Support":"unsupported","rationale":"Synthetic rationale."}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Synthetic summary."}""",
+        OperationalAssessmentFailureCategory.AmbiguousProperty,
+        "$.claims[0].Support")]
+    public async Task Assessor_DuplicateAndAmbiguousNamesFailBeforeProjection(
+        string response,
+        OperationalAssessmentFailureCategory category,
+        string path)
+    {
+        var assessment = await AssessResponseAsync(response);
+
+        assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        assessment.FailureEvidence.Should().NotBeNull();
+        assessment.FailureEvidence!.Diagnostics.Should().Contain(value =>
+            value.Category == category && value.JsonPath == path);
+    }
+
+    [Fact]
+    public async Task Assessor_AnnotationDiagnosticsAreBoundedAndRetainCanonicalFailure()
+    {
+        var root = JsonNode.Parse(
+            """
+            {"claims":[{"index":0,"support":"supported","rationale":"Synthetic rationale."}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[]}
+            """)!.AsObject();
+        for (var index = 0; index < 100; index++)
+        {
+            root[$"annotation{index:D3}"] = $"private-value-{index}";
         }
+
+        var assessment = await AssessResponseAsync(root.ToJsonString());
+
+        assessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        assessment.FailureEvidence.Should().NotBeNull();
+        assessment.FailureEvidence!.AdditionalPropertyCount.Should().Be(100);
+        assessment.FailureEvidence.DiagnosticCount.Should().Be(101);
+        assessment.FailureEvidence.Diagnostics.Should().HaveCountLessThanOrEqualTo(
+            OperationalAssessmentValidator.MaximumDiagnostics);
+        assessment.FailureEvidence.DiagnosticBytes.Should().BeLessThanOrEqualTo(
+            OperationalAssessmentValidator.MaximumDiagnosticBytes);
+        assessment.FailureEvidence.DiagnosticsTruncated.Should().BeTrue();
+        assessment.FailureEvidence.Diagnostics.Should().Contain(value =>
+            value.Category == OperationalAssessmentFailureCategory.MissingProperty
+            && value.JsonPath == "$.summary");
+        assessment.FailureEvidence.ReplayJson.Should().NotContain("private-value-");
+    }
+
+    [Fact]
+    public async Task Assessor_EnforcesExplicitJsonDepthAndSizeLimits()
+    {
+        JsonNode nested = JsonValue.Create("private-depth")!;
+        for (var index = 0; index < OperationalAssessmentValidator.MaximumJsonDepth + 4; index++)
+        {
+            nested = new JsonObject { ["nested"] = nested };
+        }
+
+        var depthAssessment = await AssessResponseAsync(nested.ToJsonString());
+        depthAssessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        depthAssessment.FailureEvidence.Should().NotBeNull();
+        depthAssessment.FailureEvidence!.Category.Should().Be(
+            OperationalAssessmentFailureCategory.DepthLimit);
+
+        const string oversized =
+            """
+            {"claims":[{"index":0,"support":"supported","rationale":"Synthetic rationale."}],"uncertainty":"appropriate","uncertaintyRationale":"Synthetic uncertainty.","unsupportedCertaintyFindings":[],"usefulNextSteps":[],"unhelpfulNextSteps":[],"summary":"Synthetic summary.","annotation":"private-value-that-forces-the-explicit-size-limit"}
+            """;
+        var sizeAssessment = await AssessResponseAsync(
+            oversized,
+            maximumTransportOutputBytes: 128);
+        sizeAssessment.Stage.Status.Should().Be(AgentHarnessStageStatus.Failed);
+        sizeAssessment.FailureEvidence.Should().NotBeNull();
+        sizeAssessment.FailureEvidence!.Category.Should().Be(
+            OperationalAssessmentFailureCategory.SizeLimit);
+        sizeAssessment.FailureEvidence.ReplayJson.Should().NotContain("private-value");
     }
 
     [Fact]
@@ -798,7 +1012,6 @@ public sealed class OperationalMcpProtocolTests
             ["unsupportedCertaintyFindings"] = new JsonArray(),
             ["usefulNextSteps"] = new JsonArray(),
             ["unhelpfulNextSteps"] = new JsonArray(),
-            ["summary"] = "Synthetic summary.",
             ["text"] = new JsonArray(values),
         }.ToJsonString();
         var assessment = await OperationalMcpAssessor.AssessAsync(
@@ -1768,6 +1981,48 @@ public sealed class OperationalMcpProtocolTests
             System.Text.Encoding.UTF8.GetByteCount(content),
             false,
             null);
+
+    private static async Task<OperationalAutomatedAssessment> AssessResponseAsync(
+        string response,
+        int maximumTransportOutputBytes = 32_768)
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        return await OperationalMcpAssessor.AssessAsync(
+            protocol.Cases[0],
+            CreateInvestigation(),
+            ModelConfiguration(),
+            new SingleTurnTransport(new AgentModelTurn(
+                response,
+                response,
+                [],
+                new AgentModelUsage(null, null, null),
+                null)),
+            maximumWallTimeSeconds: 5,
+            maximumInputBytes: 32_768,
+            maximumTransportOutputBytes,
+            protocol.AssessorAdditiveProperties,
+            new OperationalAssessmentEvidenceContext(
+                protocol.ProtocolId,
+                OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
+                "fixture/canonical-validation",
+                OperationalMcpAssessor.MaximumFailureEvidenceBytes),
+            CancellationToken.None);
+    }
+
+    private static byte[] CanonicalScoringBytes(
+        OperationalAutomatedAssessment assessment)
+        => JsonSerializer.SerializeToUtf8Bytes(
+            new
+            {
+                assessment.Claims,
+                assessment.Uncertainty,
+                assessment.UncertaintyRationale,
+                assessment.UnsupportedCertaintyFindings,
+                assessment.UsefulNextSteps,
+                assessment.UnhelpfulNextSteps,
+                assessment.Summary,
+            },
+            OperationalMcpJson.Options);
 
     private static Dictionary<OperationalUnsupportedCertaintyCategory, int> Unsupported(
             params (OperationalUnsupportedCertaintyCategory Category, int Count)[] values)

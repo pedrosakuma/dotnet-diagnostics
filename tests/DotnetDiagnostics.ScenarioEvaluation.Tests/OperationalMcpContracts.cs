@@ -283,12 +283,23 @@ public enum OperationalAssessmentFailureCategory
 {
     InvalidJson,
     MissingProperty,
+    AdditionalProperty,
     UnexpectedProperty,
+    DuplicateProperty,
+    AmbiguousProperty,
     InvalidValueKind,
     InvalidValue,
     ContradictoryValue,
+    DepthLimit,
+    SizeLimit,
     SchemaValidation,
 }
+
+public sealed record OperationalAssessmentDiagnostic(
+    OperationalAssessmentFailureCategory Category,
+    string JsonPath,
+    string? PropertyName,
+    string? ValueKind);
 
 public sealed record OperationalAssessmentFailureEvidence(
     string ProtocolId,
@@ -305,7 +316,20 @@ public sealed record OperationalAssessmentFailureEvidence(
     string? ReplayJson,
     int RetainedBytes,
     bool Truncated,
-    bool Redacted);
+    bool Redacted)
+{
+    public IReadOnlyList<OperationalAssessmentDiagnostic> Diagnostics { get; init; } = [];
+
+    public int DiagnosticCount { get; init; }
+
+    public bool DiagnosticsTruncated { get; init; }
+
+    public int AdditionalPropertyCount { get; init; }
+
+    public int ReplayBytes { get; init; }
+
+    public int DiagnosticBytes { get; init; }
+}
 
 public sealed record OperationalAutomatedAssessment(
     string AssessorProvider,
@@ -334,6 +358,14 @@ public sealed record OperationalAutomatedAssessment(
 
     public bool ClaimTextAliasNormalized { get; init; }
 
+    public IReadOnlyList<OperationalAssessmentDiagnostic> IgnoredAnnotations { get; init; } = [];
+
+    public int IgnoredAnnotationCount { get; init; }
+
+    public bool IgnoredAnnotationsTruncated { get; init; }
+
+    public int IgnoredAnnotationBytes { get; init; }
+
     public int UnsupportedCertaintyCount => UnsupportedCertaintyFindings.Count;
 }
 
@@ -352,6 +384,14 @@ public sealed record OperationalMcpPreflightReport(
     public int RetainedArtifactBytes { get; init; }
 
     public bool ClaimTextAliasNormalized { get; init; }
+
+    public IReadOnlyList<OperationalAssessmentDiagnostic> IgnoredAnnotations { get; init; } = [];
+
+    public int IgnoredAnnotationCount { get; init; }
+
+    public bool IgnoredAnnotationsTruncated { get; init; }
+
+    public int IgnoredAnnotationBytes { get; init; }
 }
 
 public sealed record OperationalMcpRunReport(
