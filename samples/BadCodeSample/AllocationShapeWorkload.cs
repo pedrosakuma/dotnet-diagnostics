@@ -38,14 +38,150 @@ internal static class AllocationShapeWorkload
     public static object RunLow(TimeSpan duration)
         => Run(duration, LowOperation, "low", 64_000);
 
+    public static object RunLowBounded(TimeSpan duration)
+        => Run(
+            duration,
+            LowOperation,
+            "low-bounded",
+            64_000,
+            pauseMilliseconds: 2);
+
+    public static object RunLowBoundedV2(TimeSpan duration)
+        => Run(
+            duration,
+            LowOperation,
+            "low-bounded-v2",
+            64_000,
+            pauseMilliseconds: 1);
+
+    public static object RunLowBoundedV3(TimeSpan duration)
+        => Run(
+            duration,
+            LowOperation,
+            "low-bounded-v3",
+            64_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 4);
+
+    public static object RunLowBoundedV4(TimeSpan duration)
+        => Run(
+            duration,
+            LowOperation,
+            "low-bounded-v4",
+            64_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 8);
+
     public static object RunIncreased(TimeSpan duration)
         => Run(duration, IncreasedOperation, "increased", 576_000);
+
+    public static object RunIncreasedBounded(TimeSpan duration)
+        => Run(
+            duration,
+            IncreasedOperation,
+            "increased-bounded",
+            576_000,
+            pauseMilliseconds: 2);
+
+    public static object RunIncreasedBoundedV2(TimeSpan duration)
+        => Run(
+            duration,
+            IncreasedOperation,
+            "increased-bounded-v2",
+            576_000,
+            pauseMilliseconds: 1);
+
+    public static object RunIncreasedBoundedV3(TimeSpan duration)
+        => Run(
+            duration,
+            IncreasedOperation,
+            "increased-bounded-v3",
+            576_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 4);
+
+    public static object RunIncreasedBoundedV4(TimeSpan duration)
+        => Run(
+            duration,
+            IncreasedOperation,
+            "increased-bounded-v4",
+            576_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 8);
 
     public static object RunPeriodicA(TimeSpan duration)
         => Run(duration, PeriodicAOperation, "periodic-a", 192_000);
 
+    public static object RunPeriodicABounded(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicAOperation,
+            "periodic-a-bounded",
+            192_000,
+            pauseMilliseconds: 2);
+
+    public static object RunPeriodicABoundedV2(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicAOperation,
+            "periodic-a-bounded-v2",
+            192_000,
+            pauseMilliseconds: 1);
+
+    public static object RunPeriodicABoundedV3(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicAOperation,
+            "periodic-a-bounded-v3",
+            192_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 4);
+
+    public static object RunPeriodicABoundedV4(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicAOperation,
+            "periodic-a-bounded-v4",
+            192_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 8);
+
     public static object RunPeriodicB(TimeSpan duration)
         => Run(duration, PeriodicBOperation, "periodic-b", 192_000);
+
+    public static object RunPeriodicBBounded(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicBOperation,
+            "periodic-b-bounded",
+            192_000,
+            pauseMilliseconds: 2);
+
+    public static object RunPeriodicBBoundedV2(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicBOperation,
+            "periodic-b-bounded-v2",
+            192_000,
+            pauseMilliseconds: 1);
+
+    public static object RunPeriodicBBoundedV3(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicBOperation,
+            "periodic-b-bounded-v3",
+            192_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 4);
+
+    public static object RunPeriodicBBoundedV4(TimeSpan duration)
+        => Run(
+            duration,
+            PeriodicBOperation,
+            "periodic-b-bounded-v4",
+            192_000,
+            pauseMilliseconds: 1,
+            pauseEveryOperations: 8);
 
     public static int EnsureRetainedBytes(int bytes)
     {
@@ -69,7 +205,8 @@ internal static class AllocationShapeWorkload
         Func<int> operation,
         string shape,
         int requestedPayloadBytesPerOperation,
-        int pauseMilliseconds = 0)
+        int pauseMilliseconds = 0,
+        int pauseEveryOperations = 1)
     {
         var stopwatch = Stopwatch.StartNew();
         long checksum = 0;
@@ -78,7 +215,8 @@ internal static class AllocationShapeWorkload
         {
             checksum += operation();
             operations++;
-            if (pauseMilliseconds > 0)
+            if (pauseMilliseconds > 0
+                && operations % pauseEveryOperations == 0)
             {
                 Thread.Sleep(pauseMilliseconds);
             }

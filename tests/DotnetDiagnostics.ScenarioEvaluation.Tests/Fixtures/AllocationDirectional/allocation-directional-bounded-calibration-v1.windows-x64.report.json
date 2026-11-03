@@ -1,0 +1,72 @@
+{
+  "calibrationId": "allocation-directional-bounded-low-periodic",
+  "calibrationVersion": "1.0.0",
+  "passed": false,
+  "boundedness": {
+    "assessable": true,
+    "passed": true,
+    "probeAttempts": 3,
+    "probeAllocationFrameCapFailures": 0,
+    "requiredPairs": 24,
+    "requiredPassedSides": 48,
+    "requiredFailedSides": 0,
+    "maximumObservedAllocationEvents": 64,
+    "allocationEventOperatingLimit": 75000,
+    "captureDurationFractionOfProbe": 0.25,
+    "workloadDurationFractionOfProbe": 0.2333333333333333333333333333,
+    "frameCountAvailable": false,
+    "moduleCountAvailable": false,
+    "fixedStrideShapesFeasible": true,
+    "partialAttributionSourcesFeasible": true,
+    "abstentionReason": null
+  },
+  "increase": {
+    "assessable": false,
+    "expectedMovementEstablished": false,
+    "aaEnvelope": 0.1246471350928294170323976736,
+    "decisionFloor": 0.1246471350928294170323976736,
+    "relativeDeltas": {
+      "pairCount": 3,
+      "median": 7.3173360130288644790186770158,
+      "medianAbsoluteDeviation": 0.0775783406678448086674289938,
+      "outlierIndexes": [],
+      "inliers": [
+        6.9443267909620673629648493687,
+        7.3173360130288644790186770158,
+        7.3949143536967092876861060096
+      ],
+      "hasRequiredPairs": true,
+      "hasRequiredInliers": true
+    },
+    "abstentionReason": "Healthy A/A variability exceeded the predeclared 10% relative bytes-per-operation sanity bound."
+  },
+  "lower": {
+    "assessable": true,
+    "expectedMovementEstablished": true,
+    "aaEnvelope": 0.047619331032019997619331032,
+    "decisionFloor": 0.10,
+    "relativeDeltas": {
+      "pairCount": 3,
+      "median": -0.8908865683311217903985012891,
+      "medianAbsoluteDeviation": 0.0060767942635272442928123752,
+      "outlierIndexes": [
+        2
+      ],
+      "inliers": [
+        -0.8908865683311217903985012891,
+        -0.8969633625946490346913136643
+      ],
+      "hasRequiredPairs": true,
+      "hasRequiredInliers": true
+    },
+    "abstentionReason": null
+  },
+  "notes": [
+    "This is a non-final calibration/selector gate and not a directional-feasibility protocol.",
+    "Every probe and required side starts once; failures remain retained and are never retried or replaced.",
+    "The operating geometry is one second of capture and 350 ms of paced workload, 25% or less of the unpaced probe geometry.",
+    "Successful MCP allocation envelopes expose allocation-event counts but not aggregate frame/module occupancy; frame and module counts are therefore explicitly unavailable rather than inferred.",
+    "The observable allocation-event margin is capped at 75% of MaxAllocationEvents.",
+    "MaxAllocationFrames remains 16,384 and is neither raised nor weakened."
+  ]
+}

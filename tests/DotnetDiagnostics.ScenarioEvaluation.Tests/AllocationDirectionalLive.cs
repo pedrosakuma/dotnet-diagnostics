@@ -22,10 +22,14 @@ internal static class AllocationDirectionalEnvironmentVariables
 
 public static class AllocationDirectionalLive
 {
-    private static readonly TimeSpan CaptureDuration = TimeSpan.FromSeconds(
-        AllocationDirectionalCapturePlan.CaptureDurationSeconds);
-    private static readonly TimeSpan ArmDelay = TimeSpan.FromMilliseconds(
-        AllocationDirectionalCapturePlan.ArmDelayMilliseconds);
+    internal static AllocationDirectionalCaptureSettings DefaultCaptureSettings { get; } =
+        new(
+            AllocationDirectionalCapturePlan.CaptureDurationSeconds,
+            AllocationDirectionalCapturePlan.ArmDelayMilliseconds,
+            AllocationDirectionalCapturePlan.WorkloadMilliseconds,
+            AllocationDirectionalCapturePlan.TopN,
+            AllocationDirectionalCapturePlan.AttemptTimeoutSeconds,
+            AllocationDirectionalCapturePlan.McpCompletionTimeoutSeconds);
 
     public static async Task<AllocationDirectionalFixture> CaptureAsync(
         string ledgerPath,
@@ -201,11 +205,27 @@ public static class AllocationDirectionalLive
         string workloadIdentity,
         AllocationDirectionalPlannedSide workload,
         CancellationToken cancellationToken)
+        => await CaptureObservationAsync(
+            client,
+            attemptId,
+            workloadIdentity,
+            workload,
+            DefaultCaptureSettings,
+            cancellationToken).ConfigureAwait(false);
+
+    internal static async Task<AllocationDirectionalObservation> CaptureObservationAsync(
+        McpClient client,
+        string attemptId,
+        string workloadIdentity,
+        AllocationDirectionalPlannedSide workload,
+        AllocationDirectionalCaptureSettings settings,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+        var captureDuration = TimeSpan.FromSeconds(settings.CaptureDurationSeconds);
         using var attempt = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken);
-        attempt.CancelAfter(TimeSpan.FromSeconds(
-            AllocationDirectionalCapturePlan.AttemptTimeoutSeconds));
+        attempt.CancelAfter(TimeSpan.FromSeconds(settings.AttemptTimeoutSeconds));
         Task<CallToolResult>? collectTask = null;
         LiveSampleProcess? sample = null;
         AllocationDirectionalObservation? observation = null;
@@ -262,11 +282,13 @@ public static class AllocationDirectionalLive
                 {
                     ["kind"] = "allocation",
                     ["processId"] = sample.ProcessId,
-                    ["durationSeconds"] = (int)CaptureDuration.TotalSeconds,
-                    ["topN"] = AllocationDirectionalCapturePlan.TopN,
+                    ["durationSeconds"] = settings.CaptureDurationSeconds,
+                    ["topN"] = settings.TopN,
                 },
                 cancellationToken: attempt.Token).AsTask();
-            await Task.Delay(ArmDelay, attempt.Token).ConfigureAwait(false);
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(settings.ArmDelayMilliseconds),
+                attempt.Token).ConfigureAwait(false);
             stage = AllocationDirectionalAttemptStage.Workload;
             operationId = "workload.capture-http";
             var workloadResults = workload.DriveWorkload
@@ -276,14 +298,14 @@ public static class AllocationDirectionalLive
                             http,
                             workload.Shape,
                             workload.RetainedBytes,
+                            settings.WorkloadMilliseconds,
                             attempt.Token)))
                     .ConfigureAwait(false)
                 : [];
             stage = AllocationDirectionalAttemptStage.McpTransport;
             operationId = "mcp.collect-sample-await";
             var collected = await collectTask.WaitAsync(
-                TimeSpan.FromSeconds(
-                    AllocationDirectionalCapturePlan.McpCompletionTimeoutSeconds),
+                TimeSpan.FromSeconds(settings.McpCompletionTimeoutSeconds),
                 attempt.Token).ConfigureAwait(false);
             stage = AllocationDirectionalAttemptStage.McpResponse;
             operationId = "mcp.response-json";
@@ -301,6 +323,7 @@ public static class AllocationDirectionalLive
                     attemptId,
                     workloadIdentity,
                     workload,
+                    captureDuration,
                     projected.Evidence,
                     aborted: false);
                 goto Complete;
@@ -324,6 +347,7 @@ public static class AllocationDirectionalLive
                     attemptId,
                     workloadIdentity,
                     workload,
+                    captureDuration,
                     AllocationDirectionalProjection.ExternalFailure(
                         attemptId,
                         workloadIdentity,
@@ -347,6 +371,7 @@ public static class AllocationDirectionalLive
                     attemptId,
                     workloadIdentity,
                     workload,
+                    captureDuration,
                     AllocationDirectionalProjection.ExternalFailure(
                         attemptId,
                         workloadIdentity,
@@ -366,7 +391,7 @@ public static class AllocationDirectionalLive
                 workload.Shape,
                 workload.Phase,
                 workload.Workers,
-                CaptureDuration.TotalSeconds,
+                captureDuration.TotalSeconds,
                 operations,
                 requestedPayload,
                 retained,
@@ -414,6 +439,7 @@ public static class AllocationDirectionalLive
                 attemptId,
                 workloadIdentity,
                 workload,
+                captureDuration,
                 AllocationDirectionalProjection.ExternalFailure(
                     attemptId,
                     workloadIdentity,
@@ -475,6 +501,7 @@ public static class AllocationDirectionalLive
                         attemptId,
                         workloadIdentity,
                         workload,
+                        captureDuration,
                         cleanup.Evidence,
                         aborted: false);
                 }
@@ -494,6 +521,7 @@ Complete:
                 attemptId,
                 workloadIdentity,
                 workload,
+                captureDuration,
                 AllocationDirectionalProjection.ExternalFailure(
                     attemptId,
                     workloadIdentity,
@@ -510,12 +538,13 @@ Complete:
         HttpClient http,
         string shape,
         int retainedBytes,
+        int workloadMilliseconds,
         CancellationToken cancellationToken)
     {
         using var response = await http.GetAsync(
             WorkloadPath(
                 shape,
-                AllocationDirectionalCapturePlan.WorkloadMilliseconds,
+                workloadMilliseconds,
                 retainedBytes),
             cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
@@ -538,6 +567,7 @@ Complete:
         string attemptId,
         string workloadIdentity,
         AllocationDirectionalPlannedSide workload,
+        TimeSpan captureDuration,
         AllocationDirectionalAttemptEvidence evidence,
         bool aborted)
         => new(
@@ -550,7 +580,7 @@ Complete:
             workload.Shape,
             workload.Phase,
             workload.Workers,
-            CaptureDuration.TotalSeconds,
+            captureDuration.TotalSeconds,
             0,
             0,
             0,

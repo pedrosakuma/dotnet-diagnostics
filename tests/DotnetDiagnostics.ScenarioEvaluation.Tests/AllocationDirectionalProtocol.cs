@@ -220,7 +220,7 @@ internal static class AllocationDirectionalProtocol
         return new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(text);
     }
 
-    private static string RepositoryRoot()
+    internal static string RepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null
