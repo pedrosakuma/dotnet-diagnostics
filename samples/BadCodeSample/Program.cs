@@ -314,6 +314,7 @@ app.MapGet("/allocation-shape", (string? shape, int? milliseconds, int? retained
     return selected switch
     {
         "primary" => Results.Ok(AllocationShapeWorkload.RunPrimary(duration)),
+        "primary-paced" => Results.Ok(AllocationShapeWorkload.RunPrimaryPaced(duration)),
         "changed" => Results.Ok(AllocationShapeWorkload.RunChanged(duration)),
         "low" => Results.Ok(AllocationShapeWorkload.RunLow(duration)),
         "increased" => Results.Ok(AllocationShapeWorkload.RunIncreased(duration)),
@@ -321,7 +322,7 @@ app.MapGet("/allocation-shape", (string? shape, int? milliseconds, int? retained
         "periodic-b" => Results.Ok(AllocationShapeWorkload.RunPeriodicB(duration)),
         _ => Results.BadRequest(new
         {
-            error = "shape must be primary, changed, low, increased, periodic-a, or periodic-b",
+            error = "shape must be primary, primary-paced, changed, low, increased, periodic-a, or periodic-b",
         }),
     };
 });

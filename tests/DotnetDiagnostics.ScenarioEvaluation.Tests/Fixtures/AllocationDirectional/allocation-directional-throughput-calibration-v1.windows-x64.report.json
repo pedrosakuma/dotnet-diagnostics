@@ -1,0 +1,58 @@
+{
+  "calibrationId": "allocation-directional-throughput-pacing",
+  "calibrationVersion": "1.0.0",
+  "passed": true,
+  "throughputGate": {
+    "assessable": true,
+    "workloadManipulationEstablished": true,
+    "estimatedBytesPerOperationStable": true,
+    "aaEnvelope": 0.002993475663033383828210459,
+    "throughputMultipliers": {
+      "pairCount": 3,
+      "median": 82.60185185185185185185185185,
+      "medianAbsoluteDeviation": 6.68246187363834422657952070,
+      "outlierIndexes": [],
+      "inliers": [
+        89.28431372549019607843137255,
+        82.60185185185185185185185185,
+        64.330357142857142857142857143
+      ],
+      "hasRequiredPairs": true,
+      "hasRequiredInliers": true
+    },
+    "estimatedBytesPerOperationAbsoluteRelativeDeltas": {
+      "pairCount": 3,
+      "median": 0.0008270157182809536839459824,
+      "medianAbsoluteDeviation": 0.0001329604515269056195282930,
+      "outlierIndexes": [],
+      "inliers": [
+        0.0010333105414184678682060597,
+        0.0008270157182809536839459824,
+        0.0006940552667540480644176894
+      ],
+      "hasRequiredPairs": true,
+      "hasRequiredInliers": true
+    },
+    "estimatedBytesPerSecondMultipliers": {
+      "pairCount": 3,
+      "median": 82.53353882201125566838442492,
+      "medianAbsoluteDeviation": 6.65851648092307779361800071,
+      "outlierIndexes": [],
+      "inliers": [
+        89.19205530293433346200242563,
+        82.53353882201125566838442492,
+        64.285708319669973961570272747
+      ],
+      "hasRequiredPairs": true,
+      "hasRequiredInliers": true
+    },
+    "abstentionReason": null,
+    "passed": true
+  },
+  "notes": [
+    "This is a pre-freeze workload calibration, not a directional-feasibility protocol or final inventory.",
+    "Operations per second establishes the workload manipulation.",
+    "Estimated sampled bytes per operation is the normalized allocation stability quantity.",
+    "Estimated sampled bytes per second is descriptive only and does not decide the gate."
+  ]
+}
