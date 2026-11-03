@@ -156,7 +156,7 @@ public static class AllocationDirectionalLive
         return observation;
     }
 
-    private static async Task<AllocationDirectionalObservation> CaptureObservationAsync(
+    internal static async Task<AllocationDirectionalObservation> CaptureObservationAsync(
         McpClient client,
         string attemptId,
         string workloadIdentity,
@@ -648,7 +648,7 @@ Complete:
                 ? "current"
                 : "controlled-projection";
 
-    private static async Task<McpClient> StartMcpAsync(
+    internal static async Task<McpClient> StartMcpAsync(
         string artifactRoot,
         CancellationToken cancellationToken)
     {

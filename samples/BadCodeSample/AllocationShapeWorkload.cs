@@ -10,6 +10,14 @@ internal static class AllocationShapeWorkload
     public static object RunPrimary(TimeSpan duration)
         => Run(duration, PrimaryOperation, "primary", 288_000);
 
+    public static object RunPrimaryPaced(TimeSpan duration)
+        => Run(
+            duration,
+            PrimaryOperation,
+            "primary-paced",
+            288_000,
+            pauseMilliseconds: 1);
+
     public static object RunChanged(TimeSpan duration)
         => Run(duration, ChangedOperation, "changed", 288_000);
 
@@ -46,7 +54,8 @@ internal static class AllocationShapeWorkload
         TimeSpan duration,
         Func<int> operation,
         string shape,
-        int requestedPayloadBytesPerOperation)
+        int requestedPayloadBytesPerOperation,
+        int pauseMilliseconds = 0)
     {
         var stopwatch = Stopwatch.StartNew();
         long checksum = 0;
@@ -55,6 +64,10 @@ internal static class AllocationShapeWorkload
         {
             checksum += operation();
             operations++;
+            if (pauseMilliseconds > 0)
+            {
+                Thread.Sleep(pauseMilliseconds);
+            }
         }
 
         return new
