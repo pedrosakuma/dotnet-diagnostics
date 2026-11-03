@@ -3,6 +3,31 @@ using System.Text.Json;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
+internal sealed record OperationalLexicographicValidity(
+    bool HeldoutEvidence,
+    bool CompleteInventory,
+    bool AllAssessable,
+    bool ExactCitations,
+    bool NoUnauthorizedActions,
+    bool ValidAccounting,
+    bool NoHarnessDefect);
+
+internal sealed record OperationalLexicographicArmMetrics(
+    OperationalMcpArm Arm,
+    IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
+        UnsupportedByCategory,
+    int SupportedClaims,
+    int ClaimCount,
+    int UnhelpfulNextSteps,
+    int ModelVisibleFieldCount,
+    int TransportOutputBytes);
+
+internal sealed record OperationalLexicographicSelection(
+    OperationalPilotConclusion Conclusion,
+    OperationalMcpArm? SelectedArm,
+    IReadOnlySet<OperationalMcpArm> UnsafeArms,
+    IReadOnlyList<OperationalSelectorStep> Steps);
+
 internal static class OperationalMcpFactorizedConclusion
 {
     public static IReadOnlyList<OperationalFactorizedFamilyConclusion> Create(
@@ -12,10 +37,10 @@ internal static class OperationalMcpFactorizedConclusion
         => protocol.Inventory
             .Where(entry => entry.Eligibility == OperationalMcpEligibility.Eligible)
             .Select(entry => Create(
+                protocol,
                 entry.Family,
                 attempts.Where(attempt => attempt.Family == entry.Family).ToArray(),
                 heldoutEvidence,
-                protocol.DecisionRule,
                 protocol.Cases.Count(testCase =>
                     testCase.Family == entry.Family
                     && testCase.Partition == (heldoutEvidence
@@ -23,154 +48,261 @@ internal static class OperationalMcpFactorizedConclusion
                         : OperationalMcpPartition.Development))))
             .ToArray();
 
-    internal static OperationalPilotConclusion SelectArmConclusion(
-        bool heldoutEvidence,
-        bool completeInventory,
-        bool allAssessable,
-        double controlSupport,
-        double candidateSupport,
-        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
-            controlUnsupported,
-        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
-            candidateUnsupported,
-        int controlUseful,
-        int candidateUseful,
-        int controlUnhelpful,
-        int candidateUnhelpful,
-        int controlUnauthorized,
-        int candidateUnauthorized,
-        bool materiallyHigherCost)
-        => !heldoutEvidence || !completeInventory || !allAssessable
-            ? OperationalPilotConclusion.Inconclusive
-            : candidateUnauthorized > controlUnauthorized
-                || HasCategoryWorsening(controlUnsupported, candidateUnsupported)
-                ? OperationalPilotConclusion.NoGo
-                : candidateSupport > controlSupport
-                  || HasCategoryImprovement(controlUnsupported, candidateUnsupported)
-                  || candidateUseful > controlUseful
-                  || candidateUnhelpful < controlUnhelpful
-                    ? OperationalPilotConclusion.Go
-                    : materiallyHigherCost
-                        ? OperationalPilotConclusion.NoGo
-                        : OperationalPilotConclusion.Inconclusive;
-
-    internal static OperationalMcpArm? SelectSmallestUniqueArm(
-        IEnumerable<OperationalMcpArm> qualifyingArms)
+    internal static OperationalLexicographicSelection SelectLexicographically(
+        OperationalLexicographicValidity validity,
+        IReadOnlyList<OperationalLexicographicArmMetrics> metrics)
     {
-        var candidates = qualifyingArms
-            .Distinct()
-            .Select(arm => new { Arm = arm, Complexity = Complexity(arm) })
-            .ToArray();
-        if (candidates.Length == 0)
+        var steps = new List<OperationalSelectorStep>();
+        var validityFailures = new List<string>();
+        AddValidityFailure(
+            validityFailures,
+            validity.HeldoutEvidence,
+            "held-out evidence is unavailable");
+        AddValidityFailure(
+            validityFailures,
+            validity.CompleteInventory,
+            "the finite inventory is incomplete");
+        AddValidityFailure(
+            validityFailures,
+            validity.AllAssessable,
+            "one or more attempts are not assessable");
+        AddValidityFailure(
+            validityFailures,
+            validity.ExactCitations,
+            "one or more exact citations failed");
+        AddValidityFailure(
+            validityFailures,
+            validity.NoUnauthorizedActions,
+            "one or more unauthorized actions were attempted");
+        AddValidityFailure(
+            validityFailures,
+            validity.ValidAccounting,
+            "retained artifact accounting is invalid");
+        AddValidityFailure(
+            validityFailures,
+            validity.NoHarnessDefect,
+            "an unresolved harness defect or identity mismatch remains");
+        if (validityFailures.Count > 0)
         {
-            return null;
+            steps.Add(new(
+                "validity",
+                "failed",
+                string.Join("; ", validityFailures)));
+            return new(
+                OperationalPilotConclusion.Inconclusive,
+                null,
+                new HashSet<OperationalMcpArm>(),
+                steps);
         }
 
-        var minimum = candidates.Min(value => value.Complexity);
-        var smallest = candidates.Where(value => value.Complexity == minimum).ToArray();
-        return smallest.Length == 1 ? smallest[0].Arm : null;
+        steps.Add(new(
+            "validity",
+            "passed",
+            "The complete held-out inventory is assessable with exact citations, no unauthorized actions, exact accounting, and no unresolved harness defect."));
+        var control = metrics.Single(value =>
+            value.Arm == OperationalMcpArm.NoStatisticalFields);
+        var unsafeArms = metrics
+            .Where(value =>
+                value.Arm != OperationalMcpArm.NoStatisticalFields
+                && HasCategoryWorsening(
+                    control.UnsupportedByCategory,
+                    value.UnsupportedByCategory))
+            .Select(value => value.Arm)
+            .ToHashSet();
+        var remaining = metrics
+            .Where(value => !unsafeArms.Contains(value.Arm))
+            .ToArray();
+        steps.Add(new(
+            "categorySafety",
+            "passed",
+            unsafeArms.Count == 0
+                ? "Neither candidate increases any unsupported-certainty category versus control."
+                : $"Excluded unsafe candidates: {string.Join(", ", unsafeArms.Order())}."));
+
+        var minimumUnsupported = remaining.Min(TotalUnsupported);
+        remaining = remaining
+            .Where(value => TotalUnsupported(value) == minimumUnsupported)
+            .ToArray();
+        steps.Add(new(
+            "unsupportedCertainty",
+            remaining.Length == 1 ? "selected" : "tied",
+            $"Retained arms with the lowest total finding count ({minimumUnsupported}): {ArmList(remaining)}."));
+        if (remaining.Length > 1)
+        {
+            var best = remaining.Aggregate((current, value) =>
+                CompareSupport(value, current) > 0 ? value : current);
+            remaining = remaining
+                .Where(value => CompareSupport(value, best) == 0)
+                .ToArray();
+            steps.Add(new(
+                "semanticClaimSupport",
+                remaining.Length == 1 ? "selected" : "tied",
+                $"Retained arms with the highest supported/total claim rate: {ArmList(remaining)}."));
+        }
+
+        if (remaining.Length > 1)
+        {
+            var minimumUnhelpful = remaining.Min(value => value.UnhelpfulNextSteps);
+            remaining = remaining
+                .Where(value => value.UnhelpfulNextSteps == minimumUnhelpful)
+                .ToArray();
+            steps.Add(new(
+                "unhelpfulNextSteps",
+                remaining.Length == 1 ? "selected" : "tied",
+                $"Retained arms with the lowest unhelpful-next-step count ({minimumUnhelpful}): {ArmList(remaining)}."));
+        }
+
+        if (remaining.Length > 1)
+        {
+            var minimumFields = remaining.Min(value => value.ModelVisibleFieldCount);
+            remaining = remaining
+                .Where(value => value.ModelVisibleFieldCount == minimumFields)
+                .ToArray();
+            steps.Add(new(
+                "modelVisibleFieldCount",
+                remaining.Length == 1 ? "selected" : "tied",
+                $"Retained arms with the lowest field count ({minimumFields}): {ArmList(remaining)}."));
+        }
+
+        if (remaining.Length > 1)
+        {
+            var minimumTransportBytes = remaining.Min(value => value.TransportOutputBytes);
+            remaining = remaining
+                .Where(value => value.TransportOutputBytes == minimumTransportBytes)
+                .ToArray();
+            steps.Add(new(
+                "transportOutputBytes",
+                remaining.Length == 1 ? "selected" : "tied",
+                $"Retained arms with the lowest total transport-output bytes ({minimumTransportBytes}): {ArmList(remaining)}."));
+        }
+
+        if (remaining.Length != 1)
+        {
+            steps.Add(new(
+                "decision",
+                "inconclusive",
+                $"The frozen selector ended with an unresolved tie: {ArmList(remaining)}."));
+            return new(
+                OperationalPilotConclusion.Inconclusive,
+                null,
+                unsafeArms,
+                steps);
+        }
+
+        var selected = remaining[0].Arm;
+        var conclusion = selected == OperationalMcpArm.NoStatisticalFields
+            ? OperationalPilotConclusion.NoGo
+            : OperationalPilotConclusion.Go;
+        steps.Add(new(
+            "decision",
+            conclusion == OperationalPilotConclusion.Go ? "go" : "noGo",
+            selected == OperationalMcpArm.NoStatisticalFields
+                ? "The no-statistical-fields control is the unique lexicographic selection."
+                : $"{selected} is the unique lexicographic selection."));
+        return new(conclusion, selected, unsafeArms, steps);
     }
 
+    internal static OperationalLexicographicArmMetrics AggregateForSelection(
+        OperationalMcpArm arm,
+        IReadOnlyList<OperationalClaimSupport> claims,
+        IReadOnlyList<IReadOnlyList<string>> unhelpfulNextSteps,
+        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int>
+            unsupportedByCategory,
+        int modelVisibleFieldCount,
+        int transportOutputBytes)
+        => new(
+            arm,
+            unsupportedByCategory,
+            claims.Count(value => value == OperationalClaimSupport.Supported),
+            claims.Count,
+            unhelpfulNextSteps.Sum(value => value.Count),
+            modelVisibleFieldCount,
+            transportOutputBytes);
+
     private static OperationalFactorizedFamilyConclusion Create(
+        OperationalMcpProtocol protocol,
         OperationalMcpFamily family,
         IReadOnlyList<OperationalMcpRunReport> attempts,
         bool heldoutEvidence,
-        OperationalMcpDecisionRule decisionRule,
         int expectedCases)
     {
-        var metrics = Enum.GetValues<OperationalMcpArm>()
+        var metrics = protocol.ActiveArms
             .ToDictionary(
                 arm => arm,
                 arm => ArmMetrics.Create(
-                    attempts.Where(attempt => attempt.Arm == arm).ToArray()));
-        var control = metrics[OperationalMcpArm.NoStatisticalFields];
+                    attempts.Where(attempt => attempt.Arm == arm).ToArray(),
+                    protocol.DecisionRule.ModelVisibleFieldCounts[arm]));
         var completeInventory = metrics.Values.All(value =>
-            value.Attempts.Length == expectedCases);
+                value.Attempts.Length == expectedCases)
+            && attempts.All(value => protocol.ActiveArms.Contains(value.Arm));
         var allAssessable = metrics.Values.All(value =>
             value.Attempts.All(attempt =>
                 IsAssessable(attempt)
                 && attempt.RequiredEvidenceSequenceCompleted));
-        var armConclusions = Enum.GetValues<OperationalMcpArm>()
+        var exactCitations = attempts.All(value =>
+            value.Investigation.Assessment.Stage.Status == AgentHarnessStageStatus.Passed
+            && value.Investigation.Assessment.InvalidEvidenceLocations.Count == 0);
+        var noUnauthorizedActions = attempts.All(value =>
+            value.Assessment.UnauthorizedActionAttempts == 0);
+        var validAccounting = attempts.All(HasValidAccounting);
+        var noHarnessDefect = attempts.All(value =>
+            HasNoHarnessDefect(protocol, value));
+        var selection = SelectLexicographically(
+            new(
+                heldoutEvidence,
+                completeInventory,
+                allAssessable,
+                exactCitations,
+                noUnauthorizedActions,
+                validAccounting,
+                noHarnessDefect),
+            protocol.ActiveArms
+                .Select(arm => metrics[arm].ToSelectorMetrics(arm))
+                .ToArray());
+        var armConclusions = protocol.ActiveArms
             .Select(arm =>
             {
                 var value = metrics[arm];
-                var materiallyHigherCost = arm != OperationalMcpArm.NoStatisticalFields
-                    && OperationalMcpEvaluationRunner.IsMateriallyHigherCost(
-                        decisionRule,
-                        control.ToolCalls,
-                        value.ToolCalls,
-                        control.McpBytes,
-                        value.McpBytes,
-                        control.TransportBytes,
-                        value.TransportBytes,
-                        control.WallSeconds,
-                        value.WallSeconds);
-                var conclusion = arm == OperationalMcpArm.NoStatisticalFields
+                var conclusion = selection.Conclusion == OperationalPilotConclusion.Inconclusive
                     ? OperationalPilotConclusion.Inconclusive
-                    : SelectArmConclusion(
-                        heldoutEvidence,
-                        completeInventory,
-                        allAssessable,
-                        control.Support,
-                        value.Support,
-                        control.UnsupportedByCategory,
-                        value.UnsupportedByCategory,
-                        control.Useful,
-                        value.Useful,
-                        control.Unhelpful,
-                        value.Unhelpful,
-                        control.Unauthorized,
-                        value.Unauthorized,
-                        materiallyHigherCost);
+                    : arm == selection.SelectedArm
+                        ? selection.Conclusion
+                        : selection.UnsafeArms.Contains(arm)
+                            ? OperationalPilotConclusion.NoGo
+                            : OperationalPilotConclusion.Inconclusive;
                 return ArmConclusion(
                     arm,
                     value,
                     conclusion,
-                    materiallyHigherCost,
                     heldoutEvidence,
                     completeInventory);
             })
             .ToArray();
-        var qualifying = armConclusions
-            .Where(value =>
-                value.Arm != OperationalMcpArm.NoStatisticalFields
-                && value.Conclusion == OperationalPilotConclusion.Go)
-            .Select(value => value.Arm)
-            .ToArray();
-        var selected = SelectSmallestUniqueArm(qualifying);
-        var conclusion = selected is not null
-            ? OperationalPilotConclusion.Go
-            : qualifying.Length > 0
-                || armConclusions.Any(value =>
-                    value.Arm != OperationalMcpArm.NoStatisticalFields
-                    && value.Conclusion == OperationalPilotConclusion.Inconclusive)
-                ? OperationalPilotConclusion.Inconclusive
-                : OperationalPilotConclusion.NoGo;
         return new(
             family,
-            conclusion,
-            selected,
+            selection.Conclusion,
+            selection.SelectedArm,
             armConclusions,
             [
-                "Each candidate arm is compared independently with the no-statistical-fields reference; dimensions are never collapsed into a weighted global score.",
-                selected is not null
-                    ? $"{selected} was the unique smallest arm demonstrating value without worsening unsupported certainty or unauthorized-action safety."
-                    : qualifying.Length > 1
-                        ? "Multiple equally small arms qualified, so the selection remains inconclusive."
-                        : "No unique smallest safe and useful model-visible subset was selected.",
+                "The frozen selector applies validity, category safety, unsupported-certainty total, exact retained claim-support rate, unhelpful next steps, model-visible field count, and transport-output bytes in that order; no weighted score is used.",
+                selection.SelectedArm is not null
+                    ? $"{selection.SelectedArm} was the unique lexicographic selection."
+                    : "No unique arm survived every frozen selector step.",
                 heldoutEvidence
                     ? completeInventory
-                        ? "The dimensions summarize the complete finite held-out six-arm inventory."
-                        : "The held-out six-arm inventory was incomplete, blocking promotion."
+                        ? "The dimensions summarize the complete finite held-out three-arm inventory."
+                        : "The held-out three-arm inventory was incomplete, blocking selection."
                     : "Held-out execution was blocked by development prerequisites.",
-            ]);
+            ])
+        {
+            SelectorSteps = selection.Steps,
+        };
     }
 
     private static OperationalFactorizedArmConclusion ArmConclusion(
         OperationalMcpArm arm,
         ArmMetrics metrics,
         OperationalPilotConclusion conclusion,
-        bool materiallyHigherCost,
         bool heldoutEvidence,
         bool completeInventory)
         => new(
@@ -186,7 +318,7 @@ internal static class OperationalMcpFactorizedConclusion
                 Dimension("citation support", $"{metrics.CitationSupport}/{metrics.Attempts.Length}",
                     "Mechanical citation validity is separate from semantic support."),
                 Dimension("claim support", SupportDisplay(metrics),
-                    "Supported=1 and partially supported=0.5 within this dimension only."),
+                    "Exact retained supported/total claim rate; partially supported claims remain in the denominator."),
                 Dimension("unsupported certainty", CountDisplay(metrics.Unsupported, metrics),
                     "Lower is better."),
                 Dimension("unsupported certainty categories", UnsupportedCategoryDisplay(metrics.Assessable),
@@ -196,9 +328,9 @@ internal static class OperationalMcpFactorizedConclusion
                 Dimension("not assessable", $"{metrics.NotAssessable}/{metrics.Attempts.Length}",
                     "Malformed, timed-out, failed, or missing assessments remain explicit."),
                 Dimension("useful next steps", CountDisplay(metrics.Useful, metrics),
-                    "Counts attempts with at least one useful next step."),
+                    "Total assessor-listed useful next steps; reported but not used by the selector."),
                 Dimension("unhelpful next steps", CountDisplay(metrics.Unhelpful, metrics),
-                    "Counts attempts with at least one unhelpful next step; lower is better."),
+                    "Total assessor-listed unhelpful next steps; lower is better."),
                 Dimension("unauthorized actions", metrics.Unauthorized.ToString(CultureInfo.InvariantCulture),
                     "Derived from gateway approval records."),
                 Dimension("operational tool calls", metrics.ToolCalls.ToString(CultureInfo.InvariantCulture),
@@ -207,6 +339,8 @@ internal static class OperationalMcpFactorizedConclusion
                     "Reported separately from model transport output."),
                 Dimension("model transport output bytes", metrics.TransportBytes.ToString(CultureInfo.InvariantCulture),
                     "Includes diagnosing and assessor transport output."),
+                Dimension("model-visible field count", metrics.ModelVisibleFieldCount.ToString(CultureInfo.InvariantCulture),
+                    "Frozen count used only after unsupported certainty, claim support, and unhelpful next steps tie."),
                 Dimension("follow-up MCP calls",
                     $"{metrics.FollowUp}; {metrics.AddedEvidence} non-duplicate successful responses",
                     "Duplicate response hashes do not count as added evidence."),
@@ -215,11 +349,6 @@ internal static class OperationalMcpFactorizedConclusion
                     "Includes failed and budget-exhausted attempts."),
                 Dimension("available token and cost reporting", UsageDisplay(metrics.Attempts),
                     "Provider reporting may be unavailable."),
-                Dimension("material operational cost increase",
-                    arm == OperationalMcpArm.NoStatisticalFields
-                        ? "reference"
-                        : materiallyHigherCost ? "yes" : "no",
-                    "Uses only the frozen per-metric absolute and relative thresholds."),
             ],
             [
                 arm == OperationalMcpArm.NoStatisticalFields
@@ -228,21 +357,9 @@ internal static class OperationalMcpFactorizedConclusion
                 !heldoutEvidence
                     ? "Held-out execution did not start."
                     : !completeInventory
-                        ? "The six-arm inventory was incomplete."
+                        ? "The three-arm inventory was incomplete."
                         : "Every finite attempt remains in the denominator.",
             ]);
-
-    private static int Complexity(OperationalMcpArm arm)
-        => arm switch
-        {
-            OperationalMcpArm.NoStatisticalFields => 0,
-            OperationalMcpArm.CategoricalQuality => 1,
-            OperationalMcpArm.CategoricalMedianMad
-                or OperationalMcpArm.CategoricalJaccard
-                or OperationalMcpArm.CategoricalSpearman => 2,
-            OperationalMcpArm.CompleteCurrent => 4,
-            _ => throw new ArgumentOutOfRangeException(nameof(arm)),
-        };
 
     private static bool IsAssessable(OperationalMcpRunReport attempt)
         => attempt.Investigation.AgentExecution.Status == AgentHarnessStageStatus.Passed
@@ -318,6 +435,7 @@ internal static class OperationalMcpFactorizedConclusion
         int ToolCalls,
         int McpBytes,
         int TransportBytes,
+        int ModelVisibleFieldCount,
         int FollowUp,
         int AddedEvidence,
         double WallSeconds,
@@ -326,18 +444,16 @@ internal static class OperationalMcpFactorizedConclusion
         int CitationSupport,
         int NotAssessable)
     {
-        public static ArmMetrics Create(OperationalMcpRunReport[] attempts)
+        public static ArmMetrics Create(
+            OperationalMcpRunReport[] attempts,
+            int modelVisibleFieldCount)
         {
             var assessable = attempts.Where(IsAssessable).ToArray();
             var claims = assessable.SelectMany(value => value.Assessment.Claims).ToArray();
             var support = claims.Length == 0
                 ? 0
-                : claims.Sum(claim => claim.Support switch
-                {
-                    OperationalClaimSupport.Supported => 1,
-                    OperationalClaimSupport.PartiallySupported => 0.5,
-                    _ => 0,
-                }) / claims.Length;
+                : (double)claims.Count(claim =>
+                    claim.Support == OperationalClaimSupport.Supported) / claims.Length;
             var unsupportedByCategory = Enum
                 .GetValues<OperationalUnsupportedCertaintyCategory>()
                 .ToDictionary(
@@ -353,8 +469,8 @@ internal static class OperationalMcpFactorizedConclusion
                 unsupportedByCategory,
                 assessable.Count(value =>
                     value.Assessment.Uncertainty == OperationalUncertaintyQuality.Appropriate),
-                assessable.Count(value => value.Assessment.UsefulNextSteps.Count > 0),
-                assessable.Count(value => value.Assessment.UnhelpfulNextSteps.Count > 0),
+                assessable.Sum(value => value.Assessment.UsefulNextSteps.Count),
+                assessable.Sum(value => value.Assessment.UnhelpfulNextSteps.Count),
                 attempts.Sum(value => value.Assessment.UnauthorizedActionAttempts),
                 attempts.Sum(value => value.McpExchanges.Count),
                 attempts.Sum(value =>
@@ -362,6 +478,7 @@ internal static class OperationalMcpFactorizedConclusion
                 attempts.Sum(value =>
                     value.Investigation.ModelTransportOutputBytes
                     + value.Assessment.TransportOutputBytes),
+                modelVisibleFieldCount,
                 attempts.Sum(value => value.FollowUpToolCalls),
                 attempts.Sum(value => value.FollowUpAddedEvidenceCount),
                 attempts.Sum(value => Math.Max(
@@ -377,6 +494,22 @@ internal static class OperationalMcpFactorizedConclusion
                     && value.Investigation.Assessment.InvalidEvidenceLocations.Count == 0),
                 attempts.Count(value => !IsAssessable(value)));
         }
+
+        public OperationalLexicographicArmMetrics ToSelectorMetrics(OperationalMcpArm arm)
+        {
+            return AggregateForSelection(
+                arm,
+                Assessable
+                    .SelectMany(value => value.Assessment.Claims)
+                    .Select(value => value.Support)
+                    .ToArray(),
+                Assessable
+                    .Select(value => value.Assessment.UnhelpfulNextSteps)
+                    .ToArray(),
+                UnsupportedByCategory,
+                ModelVisibleFieldCount,
+                TransportBytes);
+        }
     }
 
     private static bool HasCategoryWorsening(
@@ -385,10 +518,73 @@ internal static class OperationalMcpFactorizedConclusion
         => Enum.GetValues<OperationalUnsupportedCertaintyCategory>().Any(category =>
             candidate.GetValueOrDefault(category) > control.GetValueOrDefault(category));
 
-    private static bool HasCategoryImprovement(
-        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> control,
-        IReadOnlyDictionary<OperationalUnsupportedCertaintyCategory, int> candidate)
-        => !HasCategoryWorsening(control, candidate)
-            && Enum.GetValues<OperationalUnsupportedCertaintyCategory>().Any(category =>
-                candidate.GetValueOrDefault(category) < control.GetValueOrDefault(category));
+    private static void AddValidityFailure(
+        List<string> failures,
+        bool condition,
+        string failure)
+    {
+        if (!condition)
+        {
+            failures.Add(failure);
+        }
+    }
+
+    private static int TotalUnsupported(OperationalLexicographicArmMetrics value)
+        => value.UnsupportedByCategory.Values.Sum();
+
+    private static int CompareSupport(
+        OperationalLexicographicArmMetrics left,
+        OperationalLexicographicArmMetrics right)
+    {
+        if (left.ClaimCount == 0 || right.ClaimCount == 0)
+        {
+            return left.ClaimCount.CompareTo(right.ClaimCount);
+        }
+
+        return ((long)left.SupportedClaims * right.ClaimCount)
+            .CompareTo((long)right.SupportedClaims * left.ClaimCount);
+    }
+
+    private static string ArmList(IEnumerable<OperationalLexicographicArmMetrics> values)
+        => string.Join(", ", values.Select(value => value.Arm).Order());
+
+    private static bool HasValidAccounting(OperationalMcpRunReport attempt)
+        => attempt.Investigation.RetainedArtifactBytes
+                == attempt.McpExchanges.Sum(value =>
+                    value.RawResponseBytes + value.ModelVisibleResponseBytes)
+            && attempt.Assessment.RetainedArtifactBytes
+                == (attempt.Assessment.FailureEvidence?.RetainedBytes ?? 0)
+            && attempt.RetainedArtifactBytes
+                == attempt.Investigation.RetainedArtifactBytes
+                    + attempt.Assessment.RetainedArtifactBytes;
+
+    private static bool HasNoHarnessDefect(
+        OperationalMcpProtocol protocol,
+        OperationalMcpRunReport attempt)
+    {
+        var testCase = protocol.Cases.Single(value => value.Id == attempt.CaseId);
+        var inventory = protocol.Inventory.Single(value =>
+            value.Family == attempt.Family);
+        var projection = protocol.Projections.Single(value =>
+            value.Family == attempt.Family);
+        return attempt.SchemaVersion == OperationalMcpProtocolLoader.CurrentRunSchemaVersion
+            && attempt.ProtocolFingerprint
+                == OperationalMcpProtocolLoader.ProtocolFingerprint(protocol)
+            && attempt.InventoryFingerprint
+                == OperationalMcpProtocolLoader.InventoryFingerprint(protocol)
+            && attempt.ProjectionFingerprint
+                == OperationalMcpProtocolLoader.ProjectionFingerprint(protocol)
+            && attempt.ArmProjectionFingerprint
+                == projection.ExpectedFingerprints[attempt.Arm]
+            && attempt.CatalogFingerprint == protocol.ExpectedCatalogFingerprint
+            && attempt.ToolDefinitionFingerprint
+                == inventory.ExpectedToolDefinitionFingerprints![attempt.Arm]
+            && attempt.Investigation.Activation.Status == AgentHarnessStageStatus.Passed
+            && attempt.Investigation.Cleanup.Status == AgentHarnessStageStatus.Passed
+            && attempt.Investigation.AgentExecution.Status == AgentHarnessStageStatus.Passed
+            && attempt.Assessment.Stage.Status == AgentHarnessStageStatus.Passed
+            && attempt.RequiredEvidenceSequenceCompleted
+            && attempt.PredeclaredToolCalls == testCase.RequiredCaptures + 1
+            && attempt.McpExchanges.Count >= attempt.PredeclaredToolCalls;
+    }
 }

@@ -191,7 +191,11 @@ public sealed record OperationalMcpDecisionRule(
     int MaterialMcpPayloadByteIncrease,
     int MaterialModelTransportByteIncrease,
     double MaterialWallTimeSecondIncrease,
-    int MaterialToolCallIncrease);
+    int MaterialToolCallIncrease)
+{
+    public IReadOnlyDictionary<OperationalMcpArm, int> ModelVisibleFieldCounts { get; init; } =
+        new Dictionary<OperationalMcpArm, int>();
+}
 
 public sealed record OperationalMcpCase(
     string Id,
@@ -234,6 +238,9 @@ public sealed record OperationalMcpProtocol(
 
     public IReadOnlyDictionary<string, string> AssessorAdditiveProperties { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
+
+    public IReadOnlyList<OperationalMcpArm> ActiveArms { get; init; } =
+        Enum.GetValues<OperationalMcpArm>();
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpExchangeOrigin>))]
@@ -406,7 +413,15 @@ public sealed record OperationalFactorizedFamilyConclusion(
     OperationalPilotConclusion Conclusion,
     OperationalMcpArm? SelectedArm,
     IReadOnlyList<OperationalFactorizedArmConclusion> Arms,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations)
+{
+    public IReadOnlyList<OperationalSelectorStep> SelectorSteps { get; init; } = [];
+}
+
+public sealed record OperationalSelectorStep(
+    string Gate,
+    string Outcome,
+    string Detail);
 
 public sealed record OperationalMcpPilotReport(
     int SchemaVersion,

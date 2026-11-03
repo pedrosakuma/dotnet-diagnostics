@@ -17,9 +17,14 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ValidatePreservedV5();
         OperationalMcpProtocolLoader.ValidatePreservedV6();
         OperationalMcpProtocolLoader.ValidatePreservedV7();
+        OperationalMcpProtocolLoader.ValidatePreservedV8();
 
-        protocol.SchemaVersion.Should().Be(8);
-        protocol.ProtocolVersion.Should().Be("8.0.0");
+        protocol.SchemaVersion.Should().Be(9);
+        protocol.ProtocolVersion.Should().Be("9.0.0");
+        protocol.ActiveArms.Should().Equal(
+            OperationalMcpArm.NoStatisticalFields,
+            OperationalMcpArm.CategoricalMedianMad,
+            OperationalMcpArm.CategoricalJaccard);
         protocol.AssessorAdditiveProperties.Should().ContainSingle()
             .Which.Should().Be(
                 new KeyValuePair<string, string>("nextSteps", "stringArray"));
@@ -46,13 +51,13 @@ public sealed class OperationalMcpProtocolTests
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Heldout);
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(
-            protocol.Cases.Single(value => value.Id == "v8-dev-allocation-positive"));
+            protocol.Cases.Single(value => value.Id == "v9-dev-allocation-positive"));
         manifest.ReportedSymptom.Should().Contain(
             "already executed exactly 3 fresh collect_sample(kind=\"allocation\") captures");
         manifest.ReportedSymptom.Should().Contain(
             "query_snapshot(view=\"allocation-reproducibility\") sequence");
         manifest.ReportedSymptom.Should().Contain("follow-up can add evidence");
-        manifest.ReportedSymptom.Should().NotContain("v8-dev-allocation-positive");
+        manifest.ReportedSymptom.Should().NotContain("v9-dev-allocation-positive");
         manifest.ReportedSymptom.Should().NotContain("control");
         manifest.ReportedSymptom.Should().NotContain("current");
         manifest.ReportedSymptom.Should().NotContain("projection");
@@ -88,7 +93,7 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public void FrozenProtocol_UsesFreshProtocol8InventoryAndPreservesProtocol7()
+    public void FrozenProtocol_UsesFreshProtocol9InventoryAndPreservesProtocols1Through8()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         OperationalMcpProtocolLoader.ValidatePreservedV1();
@@ -97,10 +102,11 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ValidatePreservedV4();
         OperationalMcpProtocolLoader.ValidatePreservedV5();
         OperationalMcpProtocolLoader.ValidatePreservedV6();
-        var preserved = OperationalMcpProtocolLoader.LoadPreservedV7();
+        OperationalMcpProtocolLoader.ValidatePreservedV7();
+        var preserved = OperationalMcpProtocolLoader.LoadPreservedV8();
 
-        preserved.SchemaVersion.Should().Be(7);
-        preserved.ProtocolVersion.Should().Be("7.0.0");
+        preserved.SchemaVersion.Should().Be(8);
+        preserved.ProtocolVersion.Should().Be("8.0.0");
         protocol.FrozenAtUtc.Should().BeAfter(preserved.FrozenAtUtc);
         protocol.ArmOrderSeed.Should().NotBe(preserved.ArmOrderSeed);
         protocol.FailurePolicy.Should().Contain("at most once");
@@ -139,7 +145,7 @@ public sealed class OperationalMcpProtocolTests
 
         foreach (var testCase in protocol.Cases)
         {
-            testCase.Id.Should().StartWith("v8-");
+            testCase.Id.Should().StartWith("v9-");
             var workloadIdentity = string.Join(
                     "|",
                     testCase.EndpointPath,
@@ -163,8 +169,7 @@ public sealed class OperationalMcpProtocolTests
 
         var projection = protocol.Projections.Single();
         var priorProjection = preserved.Projections.Single();
-        foreach (var arm in Enum.GetValues<OperationalMcpArm>()
-                     .Where(value => value != OperationalMcpArm.CompleteCurrent))
+        foreach (var arm in protocol.ActiveArms)
         {
             projection.Versions[arm].Should().NotBe(priorProjection.Versions[arm]);
             projection.Sources[arm].Should().NotBe(priorProjection.Sources[arm]);
@@ -172,21 +177,17 @@ public sealed class OperationalMcpProtocolTests
                 .NotBe(priorProjection.ExpectedFingerprints[arm]);
         }
 
-        projection.Versions[OperationalMcpArm.CompleteCurrent].Should()
-            .Be(priorProjection.Versions[OperationalMcpArm.CompleteCurrent]);
         projection.CurrentSourceCommit.Should().Be(priorProjection.CurrentSourceCommit);
-        projection.ExpectedFingerprints[OperationalMcpArm.CompleteCurrent].Should()
-            .Be(priorProjection.ExpectedFingerprints[OperationalMcpArm.CompleteCurrent]);
         projection.GuardPackage.ExpectedFingerprint.Should()
             .Be(priorProjection.GuardPackage.ExpectedFingerprint);
         projection.ExpectedMutationFingerprint.Should()
-            .Be(priorProjection.ExpectedMutationFingerprint);
+            .NotBe(priorProjection.ExpectedMutationFingerprint);
         protocol.ExpectedCatalogFingerprint.Should()
             .Be(preserved.ExpectedCatalogFingerprint);
         protocol.ExpectedProductFingerprint.Should()
             .Be(preserved.ExpectedProductFingerprint);
         OperationalMcpProtocolLoader.DefaultOutputRoot.Should()
-            .Be(Path.Combine("artifacts", "operational-mcp-pilot-v8"))
+            .Be(Path.Combine("artifacts", "operational-mcp-pilot-v9"))
             .And.NotBe(Path.Combine("artifacts", "operational-mcp-pilot"));
     }
 
@@ -328,7 +329,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v8-dev-allocation-positive");
+            value.Id == "v9-dev-allocation-positive");
         var call = new AgentToolCall(
             "predeclared-query-1",
             "query_snapshot",
@@ -386,7 +387,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v8-dev-allocation-positive");
+            value.Id == "v9-dev-allocation-positive");
         var call = new AgentToolCall(
             "same-id",
             "query_snapshot",
@@ -981,7 +982,7 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public void ArmOrder_IsDeterministicAndContainsBothArms()
+    public void ArmOrder_IsDeterministicAndContainsOnlyFrozenArms()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var first = OperationalMcpProtocolLoader.ArmOrder(
@@ -996,11 +997,8 @@ public sealed class OperationalMcpProtocolTests
             new[]
             {
                 OperationalMcpArm.NoStatisticalFields,
-                OperationalMcpArm.CategoricalQuality,
                 OperationalMcpArm.CategoricalMedianMad,
                 OperationalMcpArm.CategoricalJaccard,
-                OperationalMcpArm.CategoricalSpearman,
-                OperationalMcpArm.CompleteCurrent,
             });
     }
 
@@ -1014,16 +1012,8 @@ public sealed class OperationalMcpProtocolTests
             {"summary":"Analyzed 3 identity-compatible allocation captures using descriptive bounded independent type and stack top-6 stability; stability does not establish workload dominance or a performance verdict.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","method":"bounded-top-k-jaccard-shared-key-spearman-v1","availability":"available","requestedCaptureCount":3,"availableCaptureCount":3,"independenceUnit":"capture","topK":6,"compatibility":{"status":"compatible","reasons":[]},"estimatedBytes":{"median":123.0,"rawMedianAbsoluteDeviation":4.0},"allocationTicks":{"median":4.0,"rawMedianAbsoluteDeviation":1.0},"allocatedTypeStability":{"pairCount":3,"membershipComparisonCount":3,"medianMembershipJaccard":0.8,"minimumMembershipJaccard":0.7,"sharedRankComparisonCount":3,"medianSharedKeySpearman":0.9,"minimumSharedKeySpearman":0.8,"membershipUnavailableReason":null,"sharedRankUnavailableReason":null},"allocationStackStability":{"pairCount":3,"membershipComparisonCount":3,"medianMembershipJaccard":0.6,"minimumMembershipJaccard":0.5,"sharedRankComparisonCount":3,"medianSharedKeySpearman":0.7,"minimumSharedKeySpearman":0.6,"membershipUnavailableReason":null,"sharedRankUnavailableReason":null},"captures":[{"handle":"h-1","handleStatus":"available","attributionState":"partial"}],"assumptions":["Each input is one separately started and stopped allocation capture.","Identity-compatible captures reported the same runtime semantics, EventPipe allocation backend, requested duration and retained top-N bounds.","Any assertion that workload shape, request mix, intensity or execution conditions were equivalent is caller-supplied and was not verified by capture identity."],"limitations":["GCAllocationTick estimated bytes are runtime sampling weights, not exact allocation totals, retained bytes, object counts or CPU time.","Stable top-K membership or rank describes retained sampled inventories only; it does not prove that a type or call site dominates the workload.","Allocated types and allocation stack sites are independent ranked inventories; no type-to-stack relationship is inferred or serialized.","Capture-level medians and raw median absolute deviations are descriptive only. No confidence interval is computed over weighted allocation ticks.","Capture identity compatibility covers recorded runtime, backend and requested capture settings only; it does not verify equivalent request mix, workload intensity or execution conditions.","Reproducibility is descriptive only: no universal scenario threshold or causal, severity, regression, health, performance or optimization-priority verdict is produced.","Missing, partial, zero-weight, unavailable or empty attribution and bounded inventories do not mean zero allocation activity; they describe observation or attribution limits for that capture."]},"handle":"h-1","cancelled":false}
             """;
 
-        _ = OperationalMcpResponseProjector.Apply(
-            raw,
-            OperationalMcpArm.CompleteCurrent,
-            projection,
-            out var currentProjected,
-            out _);
-
-        currentProjected.Should().BeTrue();
         var projected = new Dictionary<OperationalMcpArm, string>();
-        foreach (var arm in Enum.GetValues<OperationalMcpArm>())
+        foreach (var arm in protocol.ActiveArms)
         {
             var value = OperationalMcpResponseProjector.Apply(
                 raw,
@@ -1037,14 +1027,10 @@ public sealed class OperationalMcpProtocolTests
         }
         using var noFields = JsonDocument.Parse(
             projected[OperationalMcpArm.NoStatisticalFields]);
-        using var categorical = JsonDocument.Parse(
-            projected[OperationalMcpArm.CategoricalQuality]);
         using var medianMad = JsonDocument.Parse(
             projected[OperationalMcpArm.CategoricalMedianMad]);
         using var jaccard = JsonDocument.Parse(
             projected[OperationalMcpArm.CategoricalJaccard]);
-        using var spearman = JsonDocument.Parse(
-            projected[OperationalMcpArm.CategoricalSpearman]);
         var noFieldsData = noFields.RootElement.GetProperty("data");
         noFields.RootElement.GetProperty("summary").GetString()
             .Should().Be(projection.GuardPackage.Summary);
@@ -1053,11 +1039,6 @@ public sealed class OperationalMcpProtocolTests
         noFieldsData.TryGetProperty("method", out _).Should().BeFalse();
         noFieldsData.GetProperty("captures")[0].GetProperty("attributionState")
             .GetString().Should().Be("partial");
-        var categoricalData = categorical.RootElement.GetProperty("data");
-        categoricalData.GetProperty("availability").GetString().Should().Be("available");
-        categoricalData.GetProperty("compatibility").GetProperty("status")
-            .GetString().Should().Be("compatible");
-        categoricalData.TryGetProperty("estimatedBytes", out _).Should().BeFalse();
         var medianData = medianMad.RootElement.GetProperty("data");
         medianData.GetProperty("estimatedBytes").GetProperty("median")
             .GetDouble().Should().Be(123);
@@ -1067,23 +1048,9 @@ public sealed class OperationalMcpProtocolTests
             .TryGetProperty("medianMembershipJaccard", out _).Should().BeTrue();
         jaccardData.GetProperty("allocatedTypeStability")
             .TryGetProperty("medianSharedKeySpearman", out _).Should().BeFalse();
-        var spearmanData = spearman.RootElement.GetProperty("data");
-        spearmanData.GetProperty("allocatedTypeStability")
-            .TryGetProperty("medianMembershipJaccard", out _).Should().BeFalse();
-        spearmanData.GetProperty("allocatedTypeStability")
-            .TryGetProperty("medianSharedKeySpearman", out _).Should().BeTrue();
-
         var expectedPresence = new Dictionary<OperationalMcpArm, string[]>
         {
             [OperationalMcpArm.NoStatisticalFields] = [],
-            [OperationalMcpArm.CategoricalQuality] =
-            [
-                "/data/availability",
-                "/data/requestedCaptureCount",
-                "/data/availableCaptureCount",
-                "/data/independenceUnit",
-                "/data/compatibility",
-            ],
             [OperationalMcpArm.CategoricalMedianMad] =
             [
                 "/data/availability",
@@ -1104,18 +1071,6 @@ public sealed class OperationalMcpProtocolTests
                 "/data/allocatedTypeStability",
                 "/data/allocationStackStability",
             ],
-            [OperationalMcpArm.CategoricalSpearman] =
-            [
-                "/data/availability",
-                "/data/requestedCaptureCount",
-                "/data/availableCaptureCount",
-                "/data/independenceUnit",
-                "/data/compatibility",
-                "/data/allocatedTypeStability",
-                "/data/allocationStackStability",
-            ],
-            [OperationalMcpArm.CompleteCurrent] =
-                projection.CandidateResponsePointers.ToArray(),
         };
         foreach (var (arm, json) in projected)
         {
@@ -1126,6 +1081,11 @@ public sealed class OperationalMcpProtocolTests
                     expectedPresence[arm].Contains(pointer, StringComparer.Ordinal),
                     $"{pointer} has a frozen presence state for {arm}");
             }
+
+            CountCandidateLeafFields(root, projection.CandidateResponsePointers)
+                .Should().Be(
+                    protocol.DecisionRule.ModelVisibleFieldCounts[arm],
+                    $"{arm} must retain its frozen model-visible leaf-field count");
         }
 
         var invariantBytes = projected.ToDictionary(
@@ -1148,8 +1108,8 @@ public sealed class OperationalMcpProtocolTests
         var methodMutation = projection.ResponseMutations.Single(value =>
             value.JsonPointer == "/data/method");
         methodMutation.CurrentValue.HasValue.Should().BeFalse();
-        methodMutation.Arms.Should().BeEquivalentTo(Enum.GetValues<OperationalMcpArm>());
-        Enum.GetValues<OperationalMcpArm>()
+        methodMutation.Arms.Should().BeEquivalentTo(protocol.ActiveArms);
+        protocol.ActiveArms
             .Select(arm =>
                 OperationalMcpResponseProjector.ProjectionFingerprint(projection, arm))
             .Should().OnlyHaveUniqueItems(
@@ -1184,7 +1144,7 @@ public sealed class OperationalMcpProtocolTests
             {"summary":"Allocation reproducibility requires at least 3 identity-compatible available captures; 1 were available.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","method":"bounded-top-k-jaccard-shared-key-spearman-v1","availability":"insufficientCaptureCount","requestedCaptureCount":3,"availableCaptureCount":1,"captures":[{"handle":"h-1","handleStatus":"available","attributionState":"partial"}]},"handle":"h-1","cancelled":false}
             """;
 
-        var projected = Enum.GetValues<OperationalMcpArm>().ToDictionary(
+        var projected = protocol.ActiveArms.ToDictionary(
             arm => arm,
             arm => OperationalMcpResponseProjector.Apply(
                 insufficient,
@@ -1222,7 +1182,7 @@ public sealed class OperationalMcpProtocolTests
             {"summary":"Allocation captures were not identity-compatible.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","method":"bounded-top-k-jaccard-shared-key-spearman-v1","availability":"incompatible","requestedCaptureCount":3,"availableCaptureCount":2,"independenceUnit":"capture","compatibility":{"status":"incompatible","reasons":["requested duration differs"]},"captures":[{"handle":"h-1","handleStatus":"available","attributionState":"partial"},{"handle":"h-2","handleStatus":"unavailable","attributionState":"unavailable"}]},"handle":"h-2","cancelled":false}
             """;
 
-        var projected = Enum.GetValues<OperationalMcpArm>().ToDictionary(
+        var projected = protocol.ActiveArms.ToDictionary(
             arm => arm,
             arm => OperationalMcpResponseProjector.Apply(
                 incompatible,
@@ -1264,7 +1224,7 @@ public sealed class OperationalMcpProtocolTests
                     """)!.AsObject()),
         };
 
-        var guarded = Enum.GetValues<OperationalMcpArm>().ToDictionary(
+        var guarded = protocol.ActiveArms.ToDictionary(
             arm => arm,
             arm => OperationalMcpResponseProjector.ApplyToolDefinitions(
                 hardened,
@@ -1321,7 +1281,7 @@ public sealed class OperationalMcpProtocolTests
         var withoutOneArm = methodMutation with
         {
             Arms = methodMutation.Arms
-                .Where(value => value != OperationalMcpArm.CompleteCurrent)
+                .Where(value => value != OperationalMcpArm.CategoricalJaccard)
                 .ToArray(),
         };
         var changedMembership = projection with
@@ -1477,89 +1437,186 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public void FactorizedConclusion_SelectsOnlyAUniqueSmallestSafeValuableArm()
+    public void FactorizedConclusion_ExecutesEveryLexicographicGateDeterministically()
     {
-        OperationalMcpFactorizedConclusion.SelectArmConclusion(
-                heldoutEvidence: true,
-                completeInventory: true,
-                allAssessable: true,
-                controlSupport: 0.7,
-                candidateSupport: 0.8,
-                controlUnsupported: Unsupported(
-                    (OperationalUnsupportedCertaintyCategory.Dominance, 1)),
-                candidateUnsupported: Unsupported(
-                    (OperationalUnsupportedCertaintyCategory.Dominance, 1)),
-                controlUseful: 3,
-                candidateUseful: 3,
-                controlUnhelpful: 1,
-                candidateUnhelpful: 1,
-                controlUnauthorized: 0,
-                candidateUnauthorized: 0,
-                materiallyHigherCost: false)
-            .Should().Be(OperationalPilotConclusion.Go);
-        OperationalMcpFactorizedConclusion.SelectArmConclusion(
-                true, true, true,
-                0.7, 0.9,
-                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
-                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 2)),
-                3, 4,
-                1, 0,
-                0, 0,
-                false)
-            .Should().Be(OperationalPilotConclusion.NoGo);
-        OperationalMcpFactorizedConclusion.SelectArmConclusion(
-                true, false, true,
-                0.7, 0.9,
-                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
-                Unsupported(),
-                3, 4,
-                1, 0,
-                0, 0,
-                false)
-            .Should().Be(OperationalPilotConclusion.Inconclusive);
-        OperationalMcpFactorizedConclusion.SelectArmConclusion(
-                true, true, true,
-                0.7, 0.9,
-                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 2)),
-                Unsupported((OperationalUnsupportedCertaintyCategory.Severity, 2)),
-                3, 4,
-                1, 0,
-                0, 0,
-                false)
-            .Should().Be(
-                OperationalPilotConclusion.NoGo,
-                "equal totals cannot hide a worsened category");
-        OperationalMcpFactorizedConclusion.SelectArmConclusion(
-                true, true, true,
-                0.7, 0.7,
-                Unsupported(
-                    (OperationalUnsupportedCertaintyCategory.Dominance, 2),
-                    (OperationalUnsupportedCertaintyCategory.Severity, 1)),
-                Unsupported(
-                    (OperationalUnsupportedCertaintyCategory.Dominance, 1),
-                    (OperationalUnsupportedCertaintyCategory.Severity, 1)),
-                3, 3,
-                1, 1,
-                0, 0,
-                false)
-            .Should().Be(
-                OperationalPilotConclusion.Go,
-                "a category can improve only when no category worsens");
+        var valid = new OperationalLexicographicValidity(
+            HeldoutEvidence: true,
+            CompleteInventory: true,
+            AllAssessable: true,
+            ExactCitations: true,
+            NoUnauthorizedActions: true,
+            ValidAccounting: true,
+            NoHarnessDefect: true);
+        IReadOnlyList<string> firstUnhelpfulSteps = ["first", "second"];
+        IReadOnlyList<string> secondUnhelpfulSteps = ["third"];
+        var aggregated = OperationalMcpFactorizedConclusion.AggregateForSelection(
+            OperationalMcpArm.CategoricalMedianMad,
+            [
+                OperationalClaimSupport.Supported,
+                OperationalClaimSupport.PartiallySupported,
+                OperationalClaimSupport.Unsupported,
+            ],
+            [
+                firstUnhelpfulSteps,
+                secondUnhelpfulSteps,
+            ],
+            Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
+            modelVisibleFieldCount: 10,
+            transportOutputBytes: 1200);
+        aggregated.SupportedClaims.Should().Be(1);
+        aggregated.ClaimCount.Should().Be(3);
+        aggregated.UnhelpfulNextSteps.Should().Be(3);
 
-        OperationalMcpFactorizedConclusion.SelectSmallestUniqueArm(
-                [
-                    OperationalMcpArm.CategoricalQuality,
-                    OperationalMcpArm.CompleteCurrent,
-                ])
-            .Should().Be(OperationalMcpArm.CategoricalQuality);
-        OperationalMcpFactorizedConclusion.SelectSmallestUniqueArm(
-                [
-                    OperationalMcpArm.CategoricalMedianMad,
+        var invalidities = new[]
+        {
+            valid with { HeldoutEvidence = false },
+            valid with { CompleteInventory = false },
+            valid with { AllAssessable = false },
+            valid with { ExactCitations = false },
+            valid with { NoUnauthorizedActions = false },
+            valid with { ValidAccounting = false },
+            valid with { NoHarnessDefect = false },
+        };
+        foreach (var invalid in invalidities)
+        {
+            var invalidSelection = OperationalMcpFactorizedConclusion
+                .SelectLexicographically(invalid, PrimaryOrderingMetrics());
+            invalidSelection.Conclusion.Should().Be(OperationalPilotConclusion.Inconclusive);
+            invalidSelection.SelectedArm.Should().BeNull();
+            invalidSelection.Steps.Should().ContainSingle()
+                .Which.Gate.Should().Be("validity");
+            invalidSelection.Steps[0].Outcome.Should().Be("failed");
+        }
+
+        var primary = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            PrimaryOrderingMetrics());
+        primary.Conclusion.Should().Be(OperationalPilotConclusion.Go);
+        primary.SelectedArm.Should().Be(OperationalMcpArm.CategoricalMedianMad);
+        primary.Steps.Select(value => value.Gate).Should().Equal(
+            "validity",
+            "categorySafety",
+            "unsupportedCertainty",
+            "decision");
+
+        var categorySafety = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, dominance: 2, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, dominance: 1, 17, 19, 1, 10, 1100),
+                new(
                     OperationalMcpArm.CategoricalJaccard,
-                ])
-            .Should().BeNull();
-        OperationalMcpFactorizedConclusion.SelectSmallestUniqueArm([])
-            .Should().BeNull();
+                    Unsupported((OperationalUnsupportedCertaintyCategory.Severity, 1)),
+                    18,
+                    21,
+                    0,
+                    16,
+                    900),
+            ]);
+        categorySafety.UnsafeArms.Should().ContainSingle()
+            .Which.Should().Be(OperationalMcpArm.CategoricalJaccard);
+        categorySafety.SelectedArm.Should().Be(OperationalMcpArm.CategoricalMedianMad);
+
+        var support = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 2, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 17, 19, 1, 10, 1200),
+                Metric(OperationalMcpArm.CategoricalJaccard, 1, 18, 21, 0, 16, 1100),
+            ]);
+        support.SelectedArm.Should().Be(OperationalMcpArm.CategoricalMedianMad);
+        support.Steps.Should().Contain(value =>
+            value.Gate == "semanticClaimSupport" && value.Outcome == "selected");
+
+        var unhelpful = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 2, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 18, 20, 1, 10, 1200),
+                Metric(OperationalMcpArm.CategoricalJaccard, 1, 18, 20, 3, 16, 1100),
+            ]);
+        unhelpful.SelectedArm.Should().Be(OperationalMcpArm.CategoricalMedianMad);
+        unhelpful.Steps.Should().Contain(value =>
+            value.Gate == "unhelpfulNextSteps" && value.Outcome == "selected");
+
+        var fieldCount = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 2, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 18, 20, 0, 10, 1200),
+                Metric(OperationalMcpArm.CategoricalJaccard, 1, 18, 20, 0, 16, 1100),
+            ]);
+        fieldCount.SelectedArm.Should().Be(OperationalMcpArm.CategoricalMedianMad);
+        fieldCount.Steps.Should().Contain(value =>
+            value.Gate == "modelVisibleFieldCount" && value.Outcome == "selected");
+
+        var equalSupportRates = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 2, 1, 2, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 1, 2, 0, 10, 1200),
+                Metric(OperationalMcpArm.CategoricalJaccard, 1, 2, 4, 0, 16, 1100),
+            ]);
+        equalSupportRates.SelectedArm.Should().Be(OperationalMcpArm.CategoricalMedianMad);
+        equalSupportRates.Steps.Should().Contain(value =>
+            value.Gate == "semanticClaimSupport" && value.Outcome == "tied");
+
+        var transport = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 2, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 18, 20, 0, 10, 1200),
+                Metric(OperationalMcpArm.CategoricalJaccard, 1, 18, 20, 0, 10, 1100),
+            ]);
+        transport.SelectedArm.Should().Be(OperationalMcpArm.CategoricalJaccard);
+        transport.Steps.Should().Contain(value =>
+            value.Gate == "transportOutputBytes" && value.Outcome == "selected");
+
+        var tie = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 2, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 18, 20, 0, 10, 1100),
+                Metric(OperationalMcpArm.CategoricalJaccard, 1, 18, 20, 0, 10, 1100),
+            ]);
+        tie.Conclusion.Should().Be(OperationalPilotConclusion.Inconclusive);
+        tie.SelectedArm.Should().BeNull();
+        tie.Steps[^1].Outcome.Should().Be("inconclusive");
+
+        var control = OperationalMcpFactorizedConclusion.SelectLexicographically(
+            valid,
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 0, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 18, 20, 0, 10, 900),
+                Metric(OperationalMcpArm.CategoricalJaccard, 1, 18, 20, 0, 16, 800),
+            ]);
+        control.Conclusion.Should().Be(OperationalPilotConclusion.NoGo);
+        control.SelectedArm.Should().Be(OperationalMcpArm.NoStatisticalFields);
+
+        static IReadOnlyList<OperationalLexicographicArmMetrics> PrimaryOrderingMetrics()
+            =>
+            [
+                Metric(OperationalMcpArm.NoStatisticalFields, 3, 16, 20, 0, 0, 1000),
+                Metric(OperationalMcpArm.CategoricalMedianMad, 1, 17, 19, 1, 10, 1200),
+                Metric(OperationalMcpArm.CategoricalJaccard, 2, 18, 21, 2, 16, 1100),
+            ];
+
+        static OperationalLexicographicArmMetrics Metric(
+            OperationalMcpArm arm,
+            int dominance,
+            int supportedClaims,
+            int claims,
+            int unhelpful,
+            int fields,
+            int transportBytes)
+            => new(
+                arm,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, dominance)),
+                supportedClaims,
+                claims,
+                unhelpful,
+                fields,
+                transportBytes);
     }
 
     [Fact]
@@ -1907,6 +1964,23 @@ public sealed class OperationalMcpProtocolTests
         return current;
     }
 
+    private static int CountCandidateLeafFields(
+        System.Text.Json.Nodes.JsonNode root,
+        IReadOnlyList<string> pointers)
+        => pointers.Sum(pointer =>
+        {
+            var value = ResolvePointer(root, pointer);
+            return value is null ? 0 : CountLeafFields(value);
+        });
+
+    private static int CountLeafFields(System.Text.Json.Nodes.JsonNode value)
+        => value switch
+        {
+            System.Text.Json.Nodes.JsonObject objectValue => objectValue.Sum(property =>
+                property.Value is null ? 1 : CountLeafFields(property.Value)),
+            _ => 1,
+        };
+
     private static void RemovePointer(
         System.Text.Json.Nodes.JsonNode root,
         string pointer)
@@ -1942,7 +2016,7 @@ public sealed class OperationalMcpLiveTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v8-dev-allocation-positive");
+            value.Id == "v9-dev-allocation-positive");
         var outputPath = Path.Combine(
             Path.GetTempPath(),
             "dotnet-diagnostics-predeclared-failure",
@@ -2045,17 +2119,14 @@ public sealed class OperationalMcpLiveTests
 
     [Theory(Timeout = 120_000)]
     [InlineData(OperationalMcpArm.NoStatisticalFields)]
-    [InlineData(OperationalMcpArm.CategoricalQuality)]
     [InlineData(OperationalMcpArm.CategoricalMedianMad)]
     [InlineData(OperationalMcpArm.CategoricalJaccard)]
-    [InlineData(OperationalMcpArm.CategoricalSpearman)]
-    [InlineData(OperationalMcpArm.CompleteCurrent)]
     [Trait("Category", "ScenarioAgentHarnessLive")]
     public async Task RealMcpGateway_CollectsAndQueriesAllocationReproducibility(
         OperationalMcpArm arm)
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var testCase = protocol.Cases.Single(value => value.Id == "v8-dev-allocation-positive");
+        var testCase = protocol.Cases.Single(value => value.Id == "v9-dev-allocation-positive");
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(testCase);
         var artifactRoot = Path.Combine(
             Path.GetTempPath(),
@@ -2256,12 +2327,13 @@ public sealed class OperationalMcpPilotTests
                 developmentPassed
                     ? protocol.Cases.Count(value =>
                         value.Partition == OperationalMcpPartition.Heldout)
-                        * Enum.GetValues<OperationalMcpArm>().Length
+                        * protocol.ActiveArms.Count
                     : 0);
         report.Attempts.Should().OnlyContain(value =>
             value.McpExchanges.All(exchange =>
                 !string.IsNullOrWhiteSpace(exchange.RawResponseJson)
                 && !string.IsNullOrWhiteSpace(exchange.ModelVisibleResponseJson)));
-        report.FamilyConclusions.Should().ContainSingle();
+        report.FamilyConclusions.Should().BeEmpty();
+        report.FactorizedFamilyConclusions.Should().ContainSingle();
     }
 }
