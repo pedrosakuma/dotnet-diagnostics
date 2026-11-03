@@ -552,11 +552,16 @@ internal static class OperationalMcpFactorizedConclusion
         => attempt.Investigation.RetainedArtifactBytes
                 == attempt.McpExchanges.Sum(value =>
                     value.RawResponseBytes + value.ModelVisibleResponseBytes)
-            && attempt.Assessment.RetainedArtifactBytes
-                == (attempt.Assessment.FailureEvidence?.RetainedBytes ?? 0)
+            && HasValidAssessmentAccounting(attempt.Assessment)
             && attempt.RetainedArtifactBytes
                 == attempt.Investigation.RetainedArtifactBytes
                     + attempt.Assessment.RetainedArtifactBytes;
+
+    internal static bool HasValidAssessmentAccounting(
+        OperationalAutomatedAssessment assessment)
+        => assessment.RetainedArtifactBytes
+            == (assessment.FailureEvidence?.RetainedBytes ?? 0)
+                + assessment.IgnoredAnnotationBytes;
 
     private static bool HasNoHarnessDefect(
         OperationalMcpProtocol protocol,

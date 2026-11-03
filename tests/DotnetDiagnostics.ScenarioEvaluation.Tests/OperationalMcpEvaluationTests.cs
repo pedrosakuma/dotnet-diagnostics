@@ -18,9 +18,10 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ValidatePreservedV6();
         OperationalMcpProtocolLoader.ValidatePreservedV7();
         OperationalMcpProtocolLoader.ValidatePreservedV8();
+        OperationalMcpProtocolLoader.ValidatePreservedV9();
 
-        protocol.SchemaVersion.Should().Be(9);
-        protocol.ProtocolVersion.Should().Be("9.0.0");
+        protocol.SchemaVersion.Should().Be(10);
+        protocol.ProtocolVersion.Should().Be("10.0.0");
         protocol.ActiveArms.Should().Equal(
             OperationalMcpArm.NoStatisticalFields,
             OperationalMcpArm.CategoricalMedianMad,
@@ -51,13 +52,13 @@ public sealed class OperationalMcpProtocolTests
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Heldout);
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(
-            protocol.Cases.Single(value => value.Id == "v9-dev-allocation-positive"));
+            protocol.Cases.Single(value => value.Id == "v10-dev-allocation-positive"));
         manifest.ReportedSymptom.Should().Contain(
             "already executed exactly 3 fresh collect_sample(kind=\"allocation\") captures");
         manifest.ReportedSymptom.Should().Contain(
             "query_snapshot(view=\"allocation-reproducibility\") sequence");
         manifest.ReportedSymptom.Should().Contain("follow-up can add evidence");
-        manifest.ReportedSymptom.Should().NotContain("v9-dev-allocation-positive");
+        manifest.ReportedSymptom.Should().NotContain("v10-dev-allocation-positive");
         manifest.ReportedSymptom.Should().NotContain("control");
         manifest.ReportedSymptom.Should().NotContain("current");
         manifest.ReportedSymptom.Should().NotContain("projection");
@@ -93,7 +94,7 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public void FrozenProtocol_UsesFreshProtocol9InventoryAndPreservesProtocols1Through8()
+    public void FrozenProtocol_UsesFreshProtocol10InventoryAndPreservesProtocols1Through9()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         OperationalMcpProtocolLoader.ValidatePreservedV1();
@@ -103,10 +104,11 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ValidatePreservedV5();
         OperationalMcpProtocolLoader.ValidatePreservedV6();
         OperationalMcpProtocolLoader.ValidatePreservedV7();
-        var preserved = OperationalMcpProtocolLoader.LoadPreservedV8();
+        OperationalMcpProtocolLoader.ValidatePreservedV8();
+        var preserved = OperationalMcpProtocolLoader.LoadPreservedV9();
 
-        preserved.SchemaVersion.Should().Be(8);
-        preserved.ProtocolVersion.Should().Be("8.0.0");
+        preserved.SchemaVersion.Should().Be(9);
+        preserved.ProtocolVersion.Should().Be("9.0.0");
         protocol.FrozenAtUtc.Should().BeAfter(preserved.FrozenAtUtc);
         protocol.ArmOrderSeed.Should().NotBe(preserved.ArmOrderSeed);
         protocol.FailurePolicy.Should().Contain("at most once");
@@ -145,7 +147,7 @@ public sealed class OperationalMcpProtocolTests
 
         foreach (var testCase in protocol.Cases)
         {
-            testCase.Id.Should().StartWith("v9-");
+            testCase.Id.Should().StartWith("v10-");
             var workloadIdentity = string.Join(
                     "|",
                     testCase.EndpointPath,
@@ -181,13 +183,13 @@ public sealed class OperationalMcpProtocolTests
         projection.GuardPackage.ExpectedFingerprint.Should()
             .Be(priorProjection.GuardPackage.ExpectedFingerprint);
         projection.ExpectedMutationFingerprint.Should()
-            .NotBe(priorProjection.ExpectedMutationFingerprint);
+            .Be(priorProjection.ExpectedMutationFingerprint);
         protocol.ExpectedCatalogFingerprint.Should()
             .Be(preserved.ExpectedCatalogFingerprint);
         protocol.ExpectedProductFingerprint.Should()
             .Be(preserved.ExpectedProductFingerprint);
         OperationalMcpProtocolLoader.DefaultOutputRoot.Should()
-            .Be(Path.Combine("artifacts", "operational-mcp-pilot-v9"))
+            .Be(Path.Combine("artifacts", "operational-mcp-pilot-v10"))
             .And.NotBe(Path.Combine("artifacts", "operational-mcp-pilot"));
     }
 
@@ -329,7 +331,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v9-dev-allocation-positive");
+            value.Id == "v10-dev-allocation-positive");
         var call = new AgentToolCall(
             "predeclared-query-1",
             "query_snapshot",
@@ -387,7 +389,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v9-dev-allocation-positive");
+            value.Id == "v10-dev-allocation-positive");
         var call = new AgentToolCall(
             "same-id",
             "query_snapshot",
@@ -636,7 +638,7 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public async Task Assessor_Protocol9PostureShapeIsIgnoredOnlyAfterCanonicalValidation()
+    public async Task Assessor_Protocol10PostureShapeIsIgnoredOnlyAfterCanonicalValidation()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         const string response =
@@ -661,7 +663,7 @@ public sealed class OperationalMcpProtocolTests
             new OperationalAssessmentEvidenceContext(
                 protocol.ProtocolId,
                 OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
-                "fixture/protocol9-posture",
+                "fixture/protocol10-posture",
                 OperationalMcpAssessor.MaximumFailureEvidenceBytes),
             CancellationToken.None);
 
@@ -693,7 +695,7 @@ public sealed class OperationalMcpProtocolTests
         var context = new OperationalAssessmentEvidenceContext(
             protocol.ProtocolId,
             OperationalMcpProtocolLoader.ProtocolFingerprint(protocol),
-            "fixture/protocol9-posture-multi-error",
+            "fixture/protocol10-posture-multi-error",
             OperationalMcpAssessor.MaximumFailureEvidenceBytes);
 
         var assessment = await OperationalMcpAssessor.AssessAsync(
@@ -795,6 +797,9 @@ public sealed class OperationalMcpProtocolTests
         withAnnotations.IgnoredAnnotationBytes.Should().BeGreaterThan(0);
         withAnnotations.RetainedArtifactBytes.Should().Be(
             withAnnotations.IgnoredAnnotationBytes);
+        OperationalMcpFactorizedConclusion.HasValidAssessmentAccounting(
+                withAnnotations)
+            .Should().BeTrue();
         JsonSerializer.Serialize(
                 withAnnotations.IgnoredAnnotations,
                 OperationalMcpJson.Options)
@@ -2271,7 +2276,7 @@ public sealed class OperationalMcpLiveTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v9-dev-allocation-positive");
+            value.Id == "v10-dev-allocation-positive");
         var outputPath = Path.Combine(
             Path.GetTempPath(),
             "dotnet-diagnostics-predeclared-failure",
@@ -2381,7 +2386,7 @@ public sealed class OperationalMcpLiveTests
         OperationalMcpArm arm)
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var testCase = protocol.Cases.Single(value => value.Id == "v9-dev-allocation-positive");
+        var testCase = protocol.Cases.Single(value => value.Id == "v10-dev-allocation-positive");
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(testCase);
         var artifactRoot = Path.Combine(
             Path.GetTempPath(),
