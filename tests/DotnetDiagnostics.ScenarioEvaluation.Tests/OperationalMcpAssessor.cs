@@ -198,6 +198,7 @@ internal static class OperationalMcpAssessor
             {
                 TransportOutputBytes = transportOutputBytes,
                 RawResponseSha256 = BlindedDiagnosticToolGateway.Sha256(turn.RawResponse),
+                ClaimTextAliasNormalized = parsed.ClaimTextAliasNormalized,
             };
         }
 
@@ -343,7 +344,7 @@ internal static class OperationalMcpAssessor
                     turn);
             }
 
-            _ = Parse(turn.AssistantContent, claimCount: 1, additiveProperties);
+            var parsed = Parse(turn.AssistantContent, claimCount: 1, additiveProperties);
             watch.Stop();
             return new OperationalMcpPreflightReport(
                 Stage(
@@ -357,7 +358,10 @@ internal static class OperationalMcpAssessor
                 promptSha256,
                 inputBytes,
                 TransportBytes(turn),
-                BlindedDiagnosticToolGateway.Sha256(turn.RawResponse));
+                BlindedDiagnosticToolGateway.Sha256(turn.RawResponse))
+            {
+                ClaimTextAliasNormalized = parsed.ClaimTextAliasNormalized,
+            };
         }
         catch (OperationCanceledException)
         {
@@ -482,6 +486,7 @@ internal static class OperationalMcpAssessor
         ValidateAdditiveProperties(root, additive);
         var claimElements = RequiredArray(root, "$", "claims");
         var claims = new List<IndexedClaimAssessment>(claimElements.Length);
+        var claimTextAliasNormalized = false;
         for (var claimOffset = 0; claimOffset < claimElements.Length; claimOffset++)
         {
             var claim = claimElements[claimOffset];
@@ -496,7 +501,7 @@ internal static class OperationalMcpAssessor
                     $"Assessment claim at '{claimPath}' must be an object.");
             }
 
-            RejectUnknown(claim, claimPath, [], "index", "support", "rationale");
+            RejectUnknown(claim, claimPath, [], "index", "support", "rationale", "text");
             var index = RequiredInt32(claim, claimPath, "index");
             if (index < 0 || index >= claimCount)
             {
@@ -508,12 +513,18 @@ internal static class OperationalMcpAssessor
                     $"Assessment claim index {index} is outside the diagnosis.");
             }
 
+            var support = Support(
+                RequiredString(claim, claimPath, "support"),
+                PropertyPath(claimPath, "support"));
+            var rationale = RequiredClaimText(
+                claim,
+                claimPath,
+                out var normalizedFromAlias);
+            claimTextAliasNormalized |= normalizedFromAlias;
             claims.Add(new IndexedClaimAssessment(
                 index,
-                Support(
-                    RequiredString(claim, claimPath, "support"),
-                    PropertyPath(claimPath, "support")),
-                RequiredString(claim, claimPath, "rationale")));
+                support,
+                rationale));
         }
 
         if (claims.Select(claim => claim.Index).Distinct().Count() != claims.Count
@@ -609,6 +620,7 @@ internal static class OperationalMcpAssessor
 
         return new ParsedAssessment(
             ordered,
+            claimTextAliasNormalized,
             Uncertainty(
                 RequiredString(root, "$", "uncertainty"),
                 "$.uncertainty"),
@@ -791,11 +803,87 @@ internal static class OperationalMcpAssessor
         string name)
     {
         var value = RequiredProperty(root, parentPath, name);
+        return NonEmptyString(value, PropertyPath(parentPath, name), name);
+    }
+
+    private static string RequiredClaimText(
+        JsonElement claim,
+        string claimPath,
+        out bool normalizedFromAlias)
+    {
+        var hasCanonical = claim.TryGetProperty("rationale", out var canonical);
+        var hasAlias = claim.TryGetProperty("text", out var alias);
+        if (!hasCanonical && !hasAlias)
+        {
+            normalizedFromAlias = false;
+            return RequiredString(claim, claimPath, "rationale");
+        }
+
+        var canonicalText = hasCanonical
+            ? NonEmptyString(
+                canonical,
+                PropertyPath(claimPath, "rationale"),
+                "rationale")
+            : null;
+        var aliasText = hasAlias
+            ? ClaimTextAliasString(
+                alias,
+                PropertyPath(claimPath, "text"))
+            : null;
+        if (hasCanonical
+            && hasAlias
+            && !string.Equals(canonicalText, aliasText, StringComparison.Ordinal))
+        {
+            var canonicalPath = PropertyPath(claimPath, "rationale");
+            var aliasPath = PropertyPath(claimPath, "text");
+            throw Validation(
+                OperationalAssessmentFailureCategory.ContradictoryValue,
+                aliasPath,
+                "text",
+                alias.ValueKind,
+                $"Assessment claim text properties '{canonicalPath}' "
+                + $"({canonical.ValueKind}) and '{aliasPath}' ({alias.ValueKind}) "
+                + "must be identical when both are present.");
+        }
+
+        normalizedFromAlias = !hasCanonical;
+        return canonicalText ?? aliasText!;
+    }
+
+    private static string ClaimTextAliasString(JsonElement value, string path)
+    {
         if (value.ValueKind != JsonValueKind.String)
         {
             throw Validation(
                 OperationalAssessmentFailureCategory.InvalidValueKind,
-                PropertyPath(parentPath, name),
+                path,
+                "text",
+                value.ValueKind,
+                $"Assessment claim text alias at '{path}' must be a non-empty "
+                + $"string; observed value kind {value.ValueKind}.");
+        }
+
+        return value.GetString() is { Length: > 0 } text
+            ? text
+            : throw Validation(
+                OperationalAssessmentFailureCategory.InvalidValue,
+                path,
+                "text",
+                JsonValueKind.String,
+                $"Assessment claim text alias at '{path}' must be non-empty; "
+                + "observed value kind String.");
+    }
+
+    private static string NonEmptyString(
+        JsonElement value,
+        string path,
+        string name)
+    {
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw Validation(
+                OperationalAssessmentFailureCategory.InvalidValueKind,
+                path,
                 name,
                 value.ValueKind,
                 $"Assessment field '{name}' must be a non-empty string.");
@@ -805,7 +893,7 @@ internal static class OperationalMcpAssessor
             ? text
             : throw Validation(
                 OperationalAssessmentFailureCategory.InvalidValue,
-                PropertyPath(parentPath, name),
+                path,
                 name,
                 JsonValueKind.String,
                 $"Assessment field '{name}' must be a non-empty string.");
@@ -1066,7 +1154,8 @@ internal static class OperationalMcpAssessor
                 && element.TryGetInt32(out var index)
                     ? JsonValue.Create(index)
                     : JsonValue.Create(0),
-            JsonValueKind.True or JsonValueKind.False => JsonValue.Create(false),
+            JsonValueKind.True => JsonValue.Create(true),
+            JsonValueKind.False => JsonValue.Create(false),
             JsonValueKind.Null => null,
             _ => JsonValue.Create("<unsupported-json-kind>"),
         };
@@ -1081,6 +1170,7 @@ internal static class OperationalMcpAssessor
                 or "index"
                 or "support"
                 or "rationale"
+                or "text"
                 or "uncertainty"
                 or "uncertaintyRationale"
                 or "unsupportedCertaintyFindings"
@@ -1108,6 +1198,11 @@ internal static class OperationalMcpAssessor
         string? propertyName,
         Dictionary<string, string> stringTokens)
     {
+        if (value.Length == 0)
+        {
+            return string.Empty;
+        }
+
         if (propertyName is "support"
             && value is "supported"
                 or "partiallySupported"
@@ -1177,6 +1272,7 @@ internal static class OperationalMcpAssessor
 
     private sealed record ParsedAssessment(
         IReadOnlyList<OperationalClaimAssessment> Claims,
+        bool ClaimTextAliasNormalized,
         OperationalUncertaintyQuality Uncertainty,
         string UncertaintyRationale,
         IReadOnlyList<OperationalUnsupportedCertaintyFinding> UnsupportedCertaintyFindings,

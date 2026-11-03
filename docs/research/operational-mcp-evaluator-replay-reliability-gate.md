@@ -96,8 +96,10 @@ future rejection records:
 
 The canonical replay JSON preserves object/array shape, property names, JSON
 value kinds, schema indices, frozen enum vocabulary, and equality relationships
-between strings. Arbitrary string content is replaced with stable synthetic
-tokens; unrelated numeric and Boolean values are canonicalized. This retains
+between strings. Empty strings remain empty so invalid-value failures replay;
+other arbitrary string content is replaced with stable synthetic tokens.
+Unrelated numeric values are canonicalized, while Boolean values retain their
+exact JSON value kind. This retains
 the structure needed to replay strict-schema failures without persisting
 target-controlled names, paths, stacks, symbols, prompts, credentials, or
 unrestricted assessor prose.
@@ -142,3 +144,24 @@ This gate establishes deterministic replay and sufficient future
 observability. It does not make the four Protocol 7 attempts retrospectively
 assessable and does not authorize an allocation product change or a new
 empirical protocol by itself.
+
+## Later claim-text compatibility gate
+
+Protocol 8 subsequently retained one rejected assessor response with the exact
+path `$.claims[0].text` and JSON value kind `String`. Issue #1368 uses that new
+evidence only to add a narrowly bounded parser compatibility rule; it does not
+alter, rerun, or reinterpret Protocols 1 through 8.
+
+Inside each `claims` array object, `text` is accepted only as a string alias for
+the canonical `rationale` property. Alias-only input is normalized before
+validation and scoring. When both properties are present, identical strings
+retain canonical provenance; different strings fail with both JSON paths and
+value kinds. The alias remains invalid at every other path, and either property
+continues to reject missing, empty, null, array, object, number, or Boolean
+values under the canonical claim-text rules.
+
+Successful assessments and preflight reports record only whether alias
+normalization occurred. They do not add claim content to provenance. Rejected
+responses continue to use the same bounded redaction, hashes, byte counts,
+attempt identity, truncation state, and exact retained-artifact accounting
+described above.
