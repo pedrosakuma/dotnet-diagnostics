@@ -16,9 +16,10 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ValidatePreservedV4();
         OperationalMcpProtocolLoader.ValidatePreservedV5();
         OperationalMcpProtocolLoader.ValidatePreservedV6();
+        OperationalMcpProtocolLoader.ValidatePreservedV7();
 
-        protocol.SchemaVersion.Should().Be(7);
-        protocol.ProtocolVersion.Should().Be("7.0.0");
+        protocol.SchemaVersion.Should().Be(8);
+        protocol.ProtocolVersion.Should().Be("8.0.0");
         protocol.AssessorAdditiveProperties.Should().ContainSingle()
             .Which.Should().Be(
                 new KeyValuePair<string, string>("nextSteps", "stringArray"));
@@ -45,13 +46,13 @@ public sealed class OperationalMcpProtocolTests
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Heldout);
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(
-            protocol.Cases.Single(value => value.Id == "v7-dev-allocation-positive"));
+            protocol.Cases.Single(value => value.Id == "v8-dev-allocation-positive"));
         manifest.ReportedSymptom.Should().Contain(
             "already executed exactly 3 fresh collect_sample(kind=\"allocation\") captures");
         manifest.ReportedSymptom.Should().Contain(
             "query_snapshot(view=\"allocation-reproducibility\") sequence");
         manifest.ReportedSymptom.Should().Contain("follow-up can add evidence");
-        manifest.ReportedSymptom.Should().NotContain("v7-dev-allocation-positive");
+        manifest.ReportedSymptom.Should().NotContain("v8-dev-allocation-positive");
         manifest.ReportedSymptom.Should().NotContain("control");
         manifest.ReportedSymptom.Should().NotContain("current");
         manifest.ReportedSymptom.Should().NotContain("projection");
@@ -84,6 +85,109 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ProjectionFingerprint(protocol)
             .Should().Be(
                 OperationalMcpProtocolLoader.FrozenProjectionFingerprint);
+    }
+
+    [Fact]
+    public void FrozenProtocol_UsesFreshProtocol8InventoryAndPreservesProtocol7()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        OperationalMcpProtocolLoader.ValidatePreservedV1();
+        OperationalMcpProtocolLoader.ValidatePreservedV2();
+        OperationalMcpProtocolLoader.ValidatePreservedV3();
+        OperationalMcpProtocolLoader.ValidatePreservedV4();
+        OperationalMcpProtocolLoader.ValidatePreservedV5();
+        OperationalMcpProtocolLoader.ValidatePreservedV6();
+        var preserved = OperationalMcpProtocolLoader.LoadPreservedV7();
+
+        preserved.SchemaVersion.Should().Be(7);
+        preserved.ProtocolVersion.Should().Be("7.0.0");
+        protocol.FrozenAtUtc.Should().BeAfter(preserved.FrozenAtUtc);
+        protocol.ArmOrderSeed.Should().NotBe(preserved.ArmOrderSeed);
+        protocol.FailurePolicy.Should().Contain("at most once");
+        protocol.FailurePolicy.Should().Contain("no favorable retry");
+        var priorIds = new HashSet<string>(StringComparer.Ordinal);
+        var priorWorkloads = new HashSet<string>(StringComparer.Ordinal);
+        var priorCaptureIdentities = new HashSet<string>(StringComparer.Ordinal);
+        var priorSeeds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var path in OperationalMcpProtocolLoader.PreservedProtocolPaths)
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            priorSeeds.Add(document.RootElement.GetProperty("armOrderSeed").GetString()!);
+            foreach (var priorCase in document.RootElement.GetProperty("cases").EnumerateArray())
+            {
+                priorIds.Add(priorCase.GetProperty("id").GetString()!);
+                priorWorkloads.Add(string.Join(
+                    "|",
+                    priorCase.GetProperty("endpointPath").GetString(),
+                    priorCase.GetProperty("workers").GetInt32(),
+                    priorCase.GetProperty("warmupMilliseconds").GetInt32()));
+                if (priorCase.TryGetProperty("captureDurationSeconds", out var duration)
+                    && priorCase.TryGetProperty("captureTopN", out var captureTopN)
+                    && priorCase.TryGetProperty("queryTopN", out var queryTopN))
+                {
+                    priorCaptureIdentities.Add(string.Join(
+                        "|",
+                        duration.GetInt32(),
+                        captureTopN.GetInt32(),
+                        queryTopN.GetInt32()));
+                }
+            }
+        }
+
+        priorSeeds.Should().NotContain(protocol.ArmOrderSeed);
+        protocol.Cases.Select(value => value.Id).Should().NotIntersectWith(priorIds);
+
+        foreach (var testCase in protocol.Cases)
+        {
+            testCase.Id.Should().StartWith("v8-");
+            var workloadIdentity = string.Join(
+                    "|",
+                    testCase.EndpointPath,
+                    testCase.Workers,
+                    testCase.WarmupMilliseconds);
+            priorWorkloads.Should().NotContain(workloadIdentity);
+            var captureIdentity = string.Join(
+                    "|",
+                    testCase.CaptureDurationSeconds,
+                    testCase.CaptureTopN,
+                    testCase.QueryTopN);
+            priorCaptureIdentities.Should().NotContain(captureIdentity);
+            var prior = preserved.Cases.Single(value =>
+                value.Partition == testCase.Partition
+                && value.CaseClass == testCase.CaseClass);
+            OperationalMcpProtocolLoader.ArmOrder(protocol, testCase.Id)
+                .Should().NotEqual(
+                    OperationalMcpProtocolLoader.ArmOrder(preserved, prior.Id),
+                    $"{testCase.Id} must use a fresh arm ordering");
+        }
+
+        var projection = protocol.Projections.Single();
+        var priorProjection = preserved.Projections.Single();
+        foreach (var arm in Enum.GetValues<OperationalMcpArm>()
+                     .Where(value => value != OperationalMcpArm.CompleteCurrent))
+        {
+            projection.Versions[arm].Should().NotBe(priorProjection.Versions[arm]);
+            projection.Sources[arm].Should().NotBe(priorProjection.Sources[arm]);
+            projection.ExpectedFingerprints[arm].Should()
+                .NotBe(priorProjection.ExpectedFingerprints[arm]);
+        }
+
+        projection.Versions[OperationalMcpArm.CompleteCurrent].Should()
+            .Be(priorProjection.Versions[OperationalMcpArm.CompleteCurrent]);
+        projection.CurrentSourceCommit.Should().Be(priorProjection.CurrentSourceCommit);
+        projection.ExpectedFingerprints[OperationalMcpArm.CompleteCurrent].Should()
+            .Be(priorProjection.ExpectedFingerprints[OperationalMcpArm.CompleteCurrent]);
+        projection.GuardPackage.ExpectedFingerprint.Should()
+            .Be(priorProjection.GuardPackage.ExpectedFingerprint);
+        projection.ExpectedMutationFingerprint.Should()
+            .Be(priorProjection.ExpectedMutationFingerprint);
+        protocol.ExpectedCatalogFingerprint.Should()
+            .Be(preserved.ExpectedCatalogFingerprint);
+        protocol.ExpectedProductFingerprint.Should()
+            .Be(preserved.ExpectedProductFingerprint);
+        OperationalMcpProtocolLoader.DefaultOutputRoot.Should()
+            .Be(Path.Combine("artifacts", "operational-mcp-pilot-v8"))
+            .And.NotBe(Path.Combine("artifacts", "operational-mcp-pilot"));
     }
 
     [Theory]
@@ -224,7 +328,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v7-dev-allocation-positive");
+            value.Id == "v8-dev-allocation-positive");
         var call = new AgentToolCall(
             "predeclared-query-1",
             "query_snapshot",
@@ -282,7 +386,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v7-dev-allocation-positive");
+            value.Id == "v8-dev-allocation-positive");
         var call = new AgentToolCall(
             "same-id",
             "query_snapshot",
@@ -1128,8 +1232,8 @@ public sealed class OperationalMcpProtocolTests
                 completeCaseInventory: true,
                 controlSupport: 0,
                 currentSupport: 1,
-                controlUnsupported: 0,
-                currentUnsupported: 0,
+                controlUnsupported: Unsupported(),
+                currentUnsupported: Unsupported(),
                 controlUseful: 0,
                 currentUseful: 4,
                 controlUnhelpful: 0,
@@ -1141,7 +1245,7 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpEvaluationRunner.SelectConclusion(
                 true, false, true,
                 0.9, 0.1,
-                0, 4,
+                Unsupported(), Unsupported((OperationalUnsupportedCertaintyCategory.Severity, 4)),
                 4, 0,
                 0, 4,
                 0, 2,
@@ -1150,7 +1254,7 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpEvaluationRunner.SelectConclusion(
                 true, true, false,
                 0.9, 0.1,
-                0, 4,
+                Unsupported(), Unsupported((OperationalUnsupportedCertaintyCategory.Severity, 4)),
                 4, 0,
                 0, 4,
                 0, 2,
@@ -1159,7 +1263,8 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpEvaluationRunner.SelectConclusion(
                 true, true, true,
                 0.4, 0.7,
-                2, 1,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 2)),
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
                 2, 3,
                 1, 1,
                 0, 0,
@@ -1168,7 +1273,8 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpEvaluationRunner.SelectConclusion(
                 true, true, true,
                 0.4, 0.7,
-                1, 2,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 2)),
                 2, 3,
                 1, 1,
                 0, 0,
@@ -1177,12 +1283,26 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpEvaluationRunner.SelectConclusion(
                 true, true, true,
                 0.7, 0.7,
-                1, 1,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
                 3, 3,
                 0, 0,
                 0, 0,
                 true)
             .Should().Be(OperationalPilotConclusion.NoGo);
+
+        OperationalMcpEvaluationRunner.SelectConclusion(
+                true, true, true,
+                0.7, 0.8,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 2)),
+                Unsupported((OperationalUnsupportedCertaintyCategory.Severity, 2)),
+                3, 4,
+                0, 0,
+                0, 0,
+                false)
+            .Should().Be(
+                OperationalPilotConclusion.NoGo,
+                "a new unsupported-certainty category cannot be offset by improvement elsewhere");
     }
 
     [Fact]
@@ -1194,8 +1314,10 @@ public sealed class OperationalMcpProtocolTests
                 allAssessable: true,
                 controlSupport: 0.7,
                 candidateSupport: 0.8,
-                controlUnsupported: 1,
-                candidateUnsupported: 1,
+                controlUnsupported: Unsupported(
+                    (OperationalUnsupportedCertaintyCategory.Dominance, 1)),
+                candidateUnsupported: Unsupported(
+                    (OperationalUnsupportedCertaintyCategory.Dominance, 1)),
                 controlUseful: 3,
                 candidateUseful: 3,
                 controlUnhelpful: 1,
@@ -1207,7 +1329,8 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpFactorizedConclusion.SelectArmConclusion(
                 true, true, true,
                 0.7, 0.9,
-                1, 2,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 2)),
                 3, 4,
                 1, 0,
                 0, 0,
@@ -1216,12 +1339,41 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpFactorizedConclusion.SelectArmConclusion(
                 true, false, true,
                 0.7, 0.9,
-                1, 0,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 1)),
+                Unsupported(),
                 3, 4,
                 1, 0,
                 0, 0,
                 false)
             .Should().Be(OperationalPilotConclusion.Inconclusive);
+        OperationalMcpFactorizedConclusion.SelectArmConclusion(
+                true, true, true,
+                0.7, 0.9,
+                Unsupported((OperationalUnsupportedCertaintyCategory.Dominance, 2)),
+                Unsupported((OperationalUnsupportedCertaintyCategory.Severity, 2)),
+                3, 4,
+                1, 0,
+                0, 0,
+                false)
+            .Should().Be(
+                OperationalPilotConclusion.NoGo,
+                "equal totals cannot hide a worsened category");
+        OperationalMcpFactorizedConclusion.SelectArmConclusion(
+                true, true, true,
+                0.7, 0.7,
+                Unsupported(
+                    (OperationalUnsupportedCertaintyCategory.Dominance, 2),
+                    (OperationalUnsupportedCertaintyCategory.Severity, 1)),
+                Unsupported(
+                    (OperationalUnsupportedCertaintyCategory.Dominance, 1),
+                    (OperationalUnsupportedCertaintyCategory.Severity, 1)),
+                3, 3,
+                1, 1,
+                0, 0,
+                false)
+            .Should().Be(
+                OperationalPilotConclusion.Go,
+                "a category can improve only when no category worsens");
 
         OperationalMcpFactorizedConclusion.SelectSmallestUniqueArm(
                 [
@@ -1388,6 +1540,15 @@ public sealed class OperationalMcpProtocolTests
             System.Text.Encoding.UTF8.GetByteCount(content),
             false,
             null);
+
+    private static Dictionary<OperationalUnsupportedCertaintyCategory, int> Unsupported(
+            params (OperationalUnsupportedCertaintyCategory Category, int Count)[] values)
+        => Enum.GetValues<OperationalUnsupportedCertaintyCategory>()
+            .ToDictionary(
+                category => category,
+                category => values
+                    .Where(value => value.Category == category)
+                    .Sum(value => value.Count));
 
     private sealed class NeverTransport : IAgentModelTransport
     {
@@ -1610,7 +1771,7 @@ public sealed class OperationalMcpLiveTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v7-dev-allocation-positive");
+            value.Id == "v8-dev-allocation-positive");
         var outputPath = Path.Combine(
             Path.GetTempPath(),
             "dotnet-diagnostics-predeclared-failure",
@@ -1723,7 +1884,7 @@ public sealed class OperationalMcpLiveTests
         OperationalMcpArm arm)
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var testCase = protocol.Cases.Single(value => value.Id == "v7-dev-allocation-positive");
+        var testCase = protocol.Cases.Single(value => value.Id == "v8-dev-allocation-positive");
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(testCase);
         var artifactRoot = Path.Combine(
             Path.GetTempPath(),
@@ -1896,7 +2057,7 @@ public sealed class OperationalMcpPilotTests
             out var detail).Should().BeTrue(detail);
         var outputRoot = Environment.GetEnvironmentVariable(
             "DOTNET_DIAGNOSTICS_OPERATIONAL_MCP_OUTPUT_ROOT")
-            ?? Path.Combine("artifacts", "operational-mcp-pilot");
+            ?? OperationalMcpProtocolLoader.DefaultOutputRoot;
 
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var report = await OperationalMcpEvaluationRunner.RunAsync(
