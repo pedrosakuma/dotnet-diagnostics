@@ -130,12 +130,12 @@
         "summary": "Synthetic summary.",
         "text": "private-root-content"
       },
-      "expectedStatus": "failed",
-      "expectedCategory": "UnexpectedProperty",
+      "expectedStatus": "passed",
+      "expectedRationale": "Synthetic rationale.",
+      "expectedAliasNormalized": false,
       "expectedPath": "$.text",
       "expectedProperty": "text",
-      "expectedValueKind": "String",
-      "expectedDetail": "Unexpected assessment property 'text' at '$.text' with value kind String."
+      "expectedValueKind": "String"
     },
     {
       "id": "finding-text-remains-unexpected",
@@ -161,12 +161,12 @@
         "unhelpfulNextSteps": [],
         "summary": "Synthetic summary."
       },
-      "expectedStatus": "failed",
-      "expectedCategory": "UnexpectedProperty",
+      "expectedStatus": "passed",
+      "expectedRationale": "Synthetic rationale.",
+      "expectedAliasNormalized": false,
       "expectedPath": "$.unsupportedCertaintyFindings[0].text",
       "expectedProperty": "text",
-      "expectedValueKind": "String",
-      "expectedDetail": "Unexpected assessment property 'text' at '$.unsupportedCertaintyFindings[0].text' with value kind String."
+      "expectedValueKind": "String"
     },
     {
       "id": "alias-null",

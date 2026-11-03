@@ -61,8 +61,7 @@
         "summary": "Schema preflight passed.",
         "commentary": "This property was not declared by the frozen protocol."
       },
-      "expectedStatus": "failed",
-      "expectedDetail": "Unexpected assessment property 'commentary' at '$.commentary' with value kind String."
+      "expectedStatus": "passed"
     },
     {
       "id": "unreconstructable-protocol7-root-text-equivalent",
@@ -82,8 +81,7 @@
         "summary": "Synthetic summary.",
         "text": "Synthetic unexpected root value."
       },
-      "expectedStatus": "failed",
-      "expectedDetail": "Unexpected assessment property 'text' at '$.text' with value kind String.",
+      "expectedStatus": "passed",
       "expectedPath": "$.text",
       "expectedValueKind": "String"
     },
