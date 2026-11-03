@@ -54,6 +54,56 @@ public enum ThreadPoolBacklogReasonState
     Unknown,
 }
 
+/// <summary>Whether explicit quantity metadata is present on this evidence record.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<ThreadPoolBacklogQuantityMetadataAvailability>))]
+public enum ThreadPoolBacklogQuantityMetadataAvailability
+{
+    [JsonStringEnumMemberName("legacy_unavailable")]
+    LegacyUnavailable,
+
+    [JsonStringEnumMemberName("available")]
+    Available,
+}
+
+/// <summary>Identity and interpretation of one ThreadPool backlog quantity.</summary>
+public sealed record ThreadPoolBacklogQuantityDescriptor(
+    [property: JsonRequired] string Id,
+    [property: JsonRequired] string Unit,
+    [property: JsonRequired] string Aggregation,
+    [property: JsonRequired] string Normalization,
+    [property: JsonRequired] string SlopeUnit,
+    [property: JsonRequired] string SlopeAggregation,
+    [property: JsonRequired] string SlopeNormalization);
+
+/// <summary>Versioned quantity identities for bounded ThreadPool backlog evidence.</summary>
+public sealed record ThreadPoolBacklogQuantityMetadata(
+    [property: JsonRequired] string Schema,
+    [property: JsonRequired] ThreadPoolBacklogQuantityDescriptor QueueLength,
+    [property: JsonRequired] ThreadPoolBacklogQuantityDescriptor WorkerCount)
+{
+    public const string SchemaV1 =
+        "dotnet-diagnostics/threadpool-backlog-quantity-metadata/v1";
+
+    public static ThreadPoolBacklogQuantityMetadata Current { get; } = new(
+        SchemaV1,
+        new(
+            "System.Runtime/threadpool-queue-length",
+            "items",
+            "window-mean",
+            "none",
+            "items/s",
+            "median-pairwise-slope",
+            "elapsed-seconds"),
+        new(
+            "System.Runtime/threadpool-thread-count",
+            "threads",
+            "window-mean",
+            "none",
+            "threads/s",
+            "median-pairwise-slope",
+            "elapsed-seconds"));
+}
+
 /// <summary>Caller-declared protocol for bounded ThreadPool backlog evidence.</summary>
 public sealed record ThreadPoolBacklogProtocol(
     double QueueLevel,
@@ -155,7 +205,10 @@ public sealed record ThreadPoolBacklogEvidence(
     ThreadPoolBacklogMovement? WorkerMovement,
     double? CollectorQueueP95Median,
     IReadOnlyList<ThreadPoolBacklogUnavailableField> UnavailableFields,
-    ThreadPoolBacklogReasonEvidence Reason)
+    ThreadPoolBacklogReasonEvidence Reason,
+    ThreadPoolBacklogQuantityMetadataAvailability QuantityMetadataAvailability =
+        ThreadPoolBacklogQuantityMetadataAvailability.LegacyUnavailable,
+    ThreadPoolBacklogQuantityMetadata? Quantities = null)
 {
     public const string SchemaV1 = "dotnet-diagnostics/threadpool-backlog-evidence/v1";
 }
@@ -246,7 +299,9 @@ public static class ThreadPoolBacklogAnalyzer
                 null,
                 collectorP95,
                 unavailableFields,
-                reason);
+                reason,
+                ThreadPoolBacklogQuantityMetadataAvailability.Available,
+                ThreadPoolBacklogQuantityMetadata.Current);
         }
 
         var windowsAbove = queue.Count(window => window.Value >= request.Protocol.QueueLevel);
@@ -272,7 +327,9 @@ public static class ThreadPoolBacklogAnalyzer
             Movement(workers),
             collectorP95,
             unavailableFields,
-            reason);
+            reason,
+            ThreadPoolBacklogQuantityMetadataAvailability.Available,
+            ThreadPoolBacklogQuantityMetadata.Current);
     }
 
     private static bool HasRegularCadence(ThreadPoolBacklogWindow[] windows)

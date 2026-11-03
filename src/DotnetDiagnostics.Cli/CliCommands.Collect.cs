@@ -212,9 +212,21 @@ internal static partial class CliCommands
             return;
         }
 
+        var quantities = evidence.QuantityMetadataAvailability
+                == ThreadPoolBacklogQuantityMetadataAvailability.Available
+            && evidence.Quantities?.Schema == ThreadPoolBacklogQuantityMetadata.SchemaV1
+                ? evidence.Quantities
+                : null;
+        var quantityMetadataStatus = quantities is null
+            ? "legacy_unavailable"
+            : "available";
         text.AppendLine();
         text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
-            $"  ThreadPool backlog evidence: availability={BacklogAvailabilityName(evidence.Availability)}, queue-level={evidence.Protocol.QueueLevel:G}, queue-windows={evidence.QueueWindowCount}, worker-windows={evidence.WorkerWindowCount}");
+            $"  ThreadPool backlog evidence: availability={BacklogAvailabilityName(evidence.Availability)}, quantity-metadata={quantityMetadataStatus}, queue-level={BacklogValue(evidence.Protocol.QueueLevel, quantities?.QueueLength.Unit)}, queue-windows={evidence.QueueWindowCount}, worker-windows={evidence.WorkerWindowCount}");
+        if (quantities is null)
+        {
+            text.AppendLine("    quantity metadata: unavailable (legacy or missing metadata; units are not inferred)");
+        }
         if (evidence.AbstentionReasons.Count > 0)
         {
             text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
@@ -225,9 +237,9 @@ internal static partial class CliCommands
             text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
                 $"    above-level: {evidence.WindowsAboveLevel}/{evidence.QueueWindowCount} ({evidence.ProportionAboveLevel * 100:F1}%); longest={evidence.LongestContiguousDurationAboveLevelSeconds:G}s; drained-tail={evidence.DrainedAtTail}");
             text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
-                $"    queue movement: first={evidence.QueueMovement!.First:G}, last={evidence.QueueMovement.Last:G}, delta={evidence.QueueMovement.Delta:G}, median={evidence.QueueMovement.Median:G}, slope={evidence.QueueMovement.TheilSenSlopePerSecond:G}/s");
+                $"    queue movement: first={BacklogValue(evidence.QueueMovement!.First, quantities?.QueueLength.Unit)}, last={BacklogValue(evidence.QueueMovement.Last, quantities?.QueueLength.Unit)}, delta={BacklogValue(evidence.QueueMovement.Delta, quantities?.QueueLength.Unit)}, median={BacklogValue(evidence.QueueMovement.Median, quantities?.QueueLength.Unit)}, slope={BacklogValue(evidence.QueueMovement.TheilSenSlopePerSecond, quantities?.QueueLength.SlopeUnit)}");
             text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
-                $"    worker movement: first={evidence.WorkerMovement!.First:G}, last={evidence.WorkerMovement.Last:G}, delta={evidence.WorkerMovement.Delta:G}, median={evidence.WorkerMovement.Median:G}, slope={evidence.WorkerMovement.TheilSenSlopePerSecond:G}/s");
+                $"    worker movement: first={BacklogValue(evidence.WorkerMovement!.First, quantities?.WorkerCount.Unit)}, last={BacklogValue(evidence.WorkerMovement.Last, quantities?.WorkerCount.Unit)}, delta={BacklogValue(evidence.WorkerMovement.Delta, quantities?.WorkerCount.Unit)}, median={BacklogValue(evidence.WorkerMovement.Median, quantities?.WorkerCount.Unit)}, slope={BacklogValue(evidence.WorkerMovement.TheilSenSlopePerSecond, quantities?.WorkerCount.SlopeUnit)}");
         }
 
         text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
@@ -235,13 +247,19 @@ internal static partial class CliCommands
         if (evidence.CollectorQueueP95Median is double p95)
         {
             text.AppendLine(System.Globalization.CultureInfo.InvariantCulture,
-                $"    collector queue p95 median: {p95:G}");
+                $"    collector queue p95 median: {BacklogValue(p95, quantities?.QueueLength.Unit)}");
         }
         else
         {
             text.AppendLine("    collector queue p95 median: unavailable (collector did not provide per-window p95)");
         }
         text.AppendLine("    note: queue and worker movement are descriptive; this evidence does not establish starvation.");
+    }
+
+    private static string BacklogValue(double value, string? unit)
+    {
+        var formatted = value.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
+        return unit is null ? formatted : $"{formatted} {unit}";
     }
 
     private static string BacklogAvailabilityName(ThreadPoolBacklogAvailability availability) =>

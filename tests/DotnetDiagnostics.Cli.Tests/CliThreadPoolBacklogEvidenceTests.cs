@@ -57,13 +57,27 @@ public sealed class CliThreadPoolBacklogEvidenceTests
         var json = await RenderAsync(result, options, json: true);
 
         human.Should().Contain("availability=available");
+        human.Should().Contain("quantity-metadata=available");
+        human.Should().Contain("queue-level=10 items");
         human.Should().Contain("above-level: 4/4 (100.0%)");
+        human.Should().Contain("queue movement: first=12 items");
+        human.Should().Contain("slope=1 items/s");
+        human.Should().Contain("worker movement: first=4 threads");
+        human.Should().Contain("slope=1 threads/s");
         human.Should().Contain("runtime reason: state=unknown");
         human.Should().Contain("collector queue p95 median: unavailable");
         human.Should().Contain("does not establish starvation");
         using var document = JsonDocument.Parse(json);
         var evidence = document.RootElement.GetProperty("data").GetProperty("threadPoolBacklog");
         evidence.GetProperty("availability").GetString().Should().Be("available");
+        evidence.GetProperty("quantityMetadataAvailability").GetString().Should().Be("available");
+        var quantities = evidence.GetProperty("quantities");
+        quantities.GetProperty("schema").GetString()
+            .Should().Be(ThreadPoolBacklogQuantityMetadata.SchemaV1);
+        quantities.GetProperty("queueLength").GetProperty("unit").GetString().Should().Be("items");
+        quantities.GetProperty("queueLength").GetProperty("slopeUnit").GetString().Should().Be("items/s");
+        quantities.GetProperty("workerCount").GetProperty("unit").GetString().Should().Be("threads");
+        quantities.GetProperty("workerCount").GetProperty("slopeUnit").GetString().Should().Be("threads/s");
         evidence.GetProperty("proportionAboveLevel").GetDouble().Should().Be(1);
         evidence.GetProperty("reason").GetProperty("state").GetString().Should().Be("unknown");
         evidence.TryGetProperty("collectorQueueP95Median", out _).Should().BeFalse();
@@ -110,12 +124,52 @@ public sealed class CliThreadPoolBacklogEvidenceTests
 
         document.RootElement.GetProperty("threadPoolBacklog")
             .GetProperty("availability").GetString().Should().Be("available");
+        var availableEvidence = document.RootElement.GetProperty("threadPoolBacklog");
+        availableEvidence.GetProperty("quantityMetadataAvailability").GetString()
+            .Should().Be("available");
+        availableEvidence.GetProperty("quantities").GetProperty("queueLength")
+            .GetProperty("slopeUnit").GetString().Should().Be("items/s");
         var abstainedEvidence = abstainedDocument.RootElement.GetProperty("threadPoolBacklog");
         abstainedEvidence.GetProperty("availability").GetString().Should().Be("loss_detected");
+        abstainedEvidence.GetProperty("quantityMetadataAvailability").GetString()
+            .Should().Be("available");
+        abstainedEvidence.GetProperty("quantities").GetProperty("workerCount")
+            .GetProperty("slopeUnit").GetString().Should().Be("threads/s");
         abstainedEvidence.GetProperty("windowsAboveLevel").ValueKind.Should().Be(JsonValueKind.Null);
         abstainedEvidence.GetProperty("queueMovement").ValueKind.Should().Be(JsonValueKind.Null);
         abstainedEvidence.GetProperty("collectorQueueP95Median").ValueKind.Should().Be(JsonValueKind.Null);
         withoutEvidence.Should().NotContainKey("threadPoolBacklog");
+    }
+
+    [Fact]
+    public async Task LegacyMissingMetadata_RendersUnavailableWithoutInferringUnits()
+    {
+        var current = Evidence();
+        var legacy = current with
+        {
+            QuantityMetadataAvailability =
+                ThreadPoolBacklogQuantityMetadataAvailability.LegacyUnavailable,
+            Quantities = null,
+        };
+        var result = CliCommands.BuildResult(
+            DiagnosticResult.Ok(Snapshot(legacy), "captured"),
+            CliCommands.RenderCounterBacklogEvidence);
+        var options = new CliOptions { Command = "collect", Kind = "counters" };
+
+        var human = await RenderAsync(result, options, json: false);
+        var json = await RenderAsync(result, options, json: true);
+
+        human.Should().Contain("quantity-metadata=legacy_unavailable");
+        human.Should().Contain("units are not inferred");
+        human.Should().Contain("queue movement: first=12,");
+        human.Should().NotContain("12 items");
+        human.Should().NotContain("1 items/s");
+        human.Should().NotContain("4 threads");
+        using var document = JsonDocument.Parse(json);
+        var evidence = document.RootElement.GetProperty("data").GetProperty("threadPoolBacklog");
+        evidence.GetProperty("quantityMetadataAvailability").GetString()
+            .Should().Be("legacy_unavailable");
+        evidence.TryGetProperty("quantities", out _).Should().BeFalse();
     }
 
     private static ThreadPoolBacklogEvidence Evidence()
