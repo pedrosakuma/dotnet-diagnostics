@@ -6,6 +6,7 @@ namespace BadCodeSample;
 internal static class AllocationShapeWorkload
 {
     private static byte[]? s_retained;
+    private static int s_warmupTransientConsumed;
 
     public static object RunPrimary(TimeSpan duration)
         => Run(duration, PrimaryOperation, "primary", 288_000);
@@ -17,6 +18,19 @@ internal static class AllocationShapeWorkload
             "primary-paced",
             288_000,
             pauseMilliseconds: 1);
+
+    public static object RunWarmupTransient(TimeSpan duration)
+    {
+        var firstRequest = Interlocked.CompareExchange(
+            ref s_warmupTransientConsumed,
+            1,
+            0) == 0;
+        return Run(
+            duration,
+            firstRequest ? IncreasedOperation : PrimaryOperation,
+            "warmup-transient",
+            288_000);
+    }
 
     public static object RunChanged(TimeSpan duration)
         => Run(duration, ChangedOperation, "changed", 288_000);

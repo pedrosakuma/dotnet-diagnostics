@@ -1,0 +1,662 @@
+{
+  "schemaVersion": 3,
+  "protocolId": "allocation-directional-baseline-current",
+  "protocolVersion": "3.0.0",
+  "status": "frozen",
+  "frozenAtUtc": "2026-11-03T21:09:12.0971378\u002B00:00",
+  "sourceBaseCommit": "9bf5701b879f7cdc85b93ec9efbf0e0cec76c548",
+  "prerequisites": {
+    "allocationErrorClassificationIssue": 1381,
+    "allocationErrorClassificationMerge": "9cb6966e249439925ce11cb5871b4f7d808dd9cc",
+    "calibrationAndSelectorsIssue": 1382,
+    "calibrationAndSelectorsMerge": "9bf5701b879f7cdc85b93ec9efbf0e0cec76c548"
+  },
+  "question": "Under comparable workload conditions, did estimated sampled allocation activity or allocation mix change enough to justify investigating a type or call site without promoting throughput-only, transient, incompatible, biased, partial, missing, or healthy controls?",
+  "modelVisibleMeasurementQualityFields": [],
+  "requiredIndependentPairs": 3,
+  "inventory": {
+    "totalPairs": 57,
+    "liveMcpPairs": 54,
+    "controlledProjectionPairs": 3,
+    "liveMcpSides": 108,
+    "controlledProjectionSides": 6
+  },
+  "capture": {
+    "transport": "repository-built MCP over real stdio",
+    "durationSeconds": 4,
+    "armDelayMilliseconds": 900,
+    "workloadMilliseconds": 1500,
+    "defaultWarmupMilliseconds": 180,
+    "topN": 16,
+    "attemptTimeoutSeconds": 45,
+    "mcpCompletionTimeoutSeconds": 30,
+    "targetRuntimeEnvironment": {
+      "DOTNET_gcServer": "0",
+      "DOTNET_TieredCompilation": "1",
+      "DOTNET_TC_QuickJit": "1",
+      "DOTNET_TieredPGO": "1"
+    }
+  },
+  "quantityContract": {
+    "primary": "estimated sampled allocation bytes divided by completed workload operations",
+    "primaryUnit": "estimated sampled bytes per operation",
+    "throughputManipulation": "completed operations per capture second",
+    "throughputUnit": "operations per second",
+    "sampledBytesPerSecondRole": "descriptive only",
+    "rankedMovement": "absolute estimated sampled bytes per operation delta and share delta are always shown together",
+    "allocationTicks": "sampler provenance only; never object count",
+    "requiredObservationFields": [
+      "quantity",
+      "unit",
+      "baselineCurrentSemantics",
+      "workloadIdentity",
+      "denominator",
+      "normalization",
+      "assumptions",
+      "availability",
+      "abstentionReason"
+    ]
+  },
+  "selectors": {
+    "pairFirst": true,
+    "repeatedPairSummary": "median and raw MAD",
+    "outlierRule": "modified z-score 0.6745*(x-median)/MAD with strict abs(z)\u003E3.5; when MAD is zero, unequal values are candidates",
+    "outliersRemainReported": true,
+    "minimumValidPairs": 3,
+    "minimumInlierPairs": 2,
+    "maximumAaRelativeDelta": 0.25,
+    "maximumAaShareMovement": 0.25,
+    "minimumThroughputMultiplier": 1.25,
+    "warmupPracticalFloor": 0.10,
+    "warmupDecisionFloor": "max(workload-specific A/A envelope, 10%)",
+    "signRule": "every retained non-outlier must agree with the intended signed direction",
+    "convergenceRule": "the median and every retained non-outlier absolute converged delta must return inside the workload-specific A/A envelope",
+    "insufficientEvidence": "explicit abstention"
+  },
+  "capturePlan": [
+    {
+      "scenario": "HealthyAa",
+      "pairPrefix": "v3-healthy-aa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "workloadIdentity": "healthy-aa-primary-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "healthy-aa-primary-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "TrueIncrease",
+      "pairPrefix": "v3-increase-aa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "workloadIdentity": "allocation-volume-v3",
+        "shape": "low",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 64000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "allocation-volume-v3",
+        "shape": "low",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 64000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "TrueIncrease",
+      "pairPrefix": "v3-increase-effect",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "workloadIdentity": "allocation-volume-v3",
+        "shape": "low",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 64000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "allocation-volume-v3",
+        "shape": "increased",
+        "workers": 1,
+        "phase": "effect",
+        "expectedPayloadBytesPerOperation": 576000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "MixShiftStableTotal",
+      "pairPrefix": "v3-mix-aa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "workloadIdentity": "equal-payload-mix-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "equal-payload-mix-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "MixShiftStableTotal",
+      "pairPrefix": "v3-mix-effect",
+      "comparisonAxis": "allocation-mix",
+      "baseline": {
+        "workloadIdentity": "equal-payload-mix-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "equal-payload-mix-v3",
+        "shape": "changed",
+        "workers": 1,
+        "phase": "effect",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "ThroughputIncreaseStablePerOperation",
+      "pairPrefix": "v3-throughput-aa",
+      "comparisonAxis": "same-load",
+      "baseline": {
+        "workloadIdentity": "primary-throughput-v3",
+        "shape": "primary-paced",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "primary-throughput-v3",
+        "shape": "primary-paced",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "ThroughputIncreaseStablePerOperation",
+      "pairPrefix": "v3-throughput-effect",
+      "comparisonAxis": "explicit-pacing",
+      "baseline": {
+        "workloadIdentity": "primary-throughput-v3",
+        "shape": "primary-paced",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "primary-throughput-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "effect",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "LowerAllocationStableRetained",
+      "pairPrefix": "v3-lower-aa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "workloadIdentity": "retained-volume-v3",
+        "shape": "increased",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 576000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 2097152,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "retained-volume-v3",
+        "shape": "increased",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 576000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 2097152,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "LowerAllocationStableRetained",
+      "pairPrefix": "v3-lower-effect",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "workloadIdentity": "retained-volume-v3",
+        "shape": "increased",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 576000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 2097152,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "retained-volume-v3",
+        "shape": "low",
+        "workers": 1,
+        "phase": "effect",
+        "expectedPayloadBytesPerOperation": 64000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 2097152,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "WarmupTransientConverges",
+      "pairPrefix": "v3-warmup-aa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "workloadIdentity": "warmup-transient-v3",
+        "shape": "warmup-transient",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "warmup-transient-v3",
+        "shape": "warmup-transient",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "WarmupTransientConverges",
+      "pairPrefix": "v3-warmup-early",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "workloadIdentity": "warmup-transient-v3",
+        "shape": "warmup-transient",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "warmup-transient-v3",
+        "shape": "warmup-transient",
+        "workers": 1,
+        "phase": "early",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 0,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "WarmupTransientConverges",
+      "pairPrefix": "v3-warmup-converged",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "workloadIdentity": "warmup-transient-v3",
+        "shape": "warmup-transient",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "warmup-transient-v3",
+        "shape": "warmup-transient",
+        "workers": 1,
+        "phase": "converged",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "ChangedWorkload",
+      "pairPrefix": "v3-changed-workload",
+      "comparisonAxis": "workload-identity",
+      "baseline": {
+        "workloadIdentity": "request-mix-a-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "request-mix-b-v3",
+        "shape": "changed",
+        "workers": 1,
+        "phase": "effect",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "FixedStrideBias",
+      "pairPrefix": "v3-stride-a-aa",
+      "comparisonAxis": "same-order-periodic-a",
+      "baseline": {
+        "workloadIdentity": "equal-payload-order-a-v3",
+        "shape": "periodic-a",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "equal-payload-order-a-v3",
+        "shape": "periodic-a",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "FixedStrideBias",
+      "pairPrefix": "v3-stride-b-aa",
+      "comparisonAxis": "same-order-periodic-b",
+      "baseline": {
+        "workloadIdentity": "equal-payload-order-b-v3",
+        "shape": "periodic-b",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "equal-payload-order-b-v3",
+        "shape": "periodic-b",
+        "workers": 1,
+        "phase": "aa",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "FixedStrideBias",
+      "pairPrefix": "v3-stride-a-to-b",
+      "comparisonAxis": "allocation-order-a-to-b",
+      "baseline": {
+        "workloadIdentity": "equal-payload-order-reorder-v3",
+        "shape": "periodic-a",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "equal-payload-order-reorder-v3",
+        "shape": "periodic-b",
+        "workers": 1,
+        "phase": "effect",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "FixedStrideBias",
+      "pairPrefix": "v3-stride-b-to-a",
+      "comparisonAxis": "allocation-order-b-to-a",
+      "baseline": {
+        "workloadIdentity": "equal-payload-order-reorder-v3",
+        "shape": "periodic-b",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "equal-payload-order-reorder-v3",
+        "shape": "periodic-a",
+        "workers": 1,
+        "phase": "effect",
+        "expectedPayloadBytesPerOperation": 192000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      }
+    },
+    {
+      "scenario": "MissingOrZeroWeight",
+      "pairPrefix": "v3-missing-denominator",
+      "comparisonAxis": "availability",
+      "baseline": {
+        "workloadIdentity": "missing-denominator-v3",
+        "shape": "primary",
+        "workers": 1,
+        "phase": "steady",
+        "expectedPayloadBytesPerOperation": 288000,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": true
+      },
+      "current": {
+        "workloadIdentity": "missing-denominator-v3",
+        "shape": "primary",
+        "workers": 0,
+        "phase": "missing",
+        "expectedPayloadBytesPerOperation": 0,
+        "warmupMilliseconds": 180,
+        "retainedBytes": 0,
+        "driveWorkload": false
+      }
+    }
+  ],
+  "failurePolicy": "Every predeclared live side and pair starts at most once. All failures and aborts remain in denominators. No favorable retry, replacement, deletion, or reinterpretation is permitted.",
+  "errorTaxonomy": {
+    "permissionDenied": "requires evidence-backed diagnostic-endpoint authorization or socket-access failure",
+    "nonPermissionInvalidOperation": "retains its truthful structured unavailable, invalid-state, or internal category",
+    "evidence": "bounded, stage-specific, privacy-safe provenance only",
+    "successFallback": "forbidden"
+  },
+  "decisionGates": {
+    "numericGo": "Every scenario is assessable, every expected control behaves safely, signed effects satisfy the frozen pair summaries, and no unsafe directional evidence is observed.",
+    "blindedEvaluation": "Runs exactly once only after numeric GO and compares blinded raw-total versus directional packets without measurement-quality fields.",
+    "go": "Numeric GO plus blinded improvement in support or next-step usefulness without any increase in unsupported certainty.",
+    "noGo": "Normalization failure, overlapping intended effects, unsafe controls, no operational value, worsened certainty, or unacceptable boundedness/catalog cost.",
+    "inconclusive": "Incomplete inventory, incomplete assessability, unresolved harness validity, invalid accounting, or incomplete blinded evaluation after numeric GO."
+  },
+  "boundaries": {
+    "productImplementation": false,
+    "productSchemaChange": false,
+    "collectorChange": false,
+    "retentionChange": false,
+    "toolOrCatalogChange": false,
+    "downstreamDesignIssueOnlyAfterReviewedGo": true
+  },
+  "frozenInputs": {
+    "textHashCanonicalization": "utf8-no-bom-crlf",
+    "sourceFilesSha256": {
+      "global.json": "29bafcc8fddcedd9662e2f2969697bfa84dd8e43758856113696fb1af3d96cd5",
+      "Directory.Build.props": "4d56b85205614d25d63b160d5f20fbc772788b0bd904ff224fe855bd1541755e",
+      "Directory.Packages.props": "8a0d2dc5437824d609a0b7aba537f216c7a5de518a1027361f5cfc195b7df57d",
+      "samples/BadCodeSample/AllocationShapeWorkload.cs": "748a3286dda64f198934e6285dad7f2c7d8403b4cc0de778057da4e918eaea15",
+      "samples/BadCodeSample/BadCodeSample.csproj": "bfdf3616d6cade46ee89fad42413e42a94012e25d1710bab8f6ab3a54d772283",
+      "samples/BadCodeSample/Program.cs": "3aa25bf7b2472c8e0708418ad54e242de366de3015a7b4c4386e5ae38b8ee82b",
+      "src/DotnetDiagnostics.Core/CpuSampling/AllocationSample.cs": "bf9dc8bd188f42bdde86e9217fabc71b8c1912b8948a79308940efb8da7cdb24",
+      "src/DotnetDiagnostics.Core/CpuSampling/EventPipeAllocationSampler.cs": "015d8a2fb71ee2468bffdd8b8d8f5d5eba0eaf6365a2ba2f137fb5091d0e3fea",
+      "src/DotnetDiagnostics.Core/UseCases/AllocationSampleFailureClassifier.cs": "ae63ba7c5e8328769e43abf237a88f28c8a24865fb0b7838e960937b2098f22e",
+      "src/DotnetDiagnostics.Core/UseCases/SamplerUseCases.cs": "7653e00d7806d222bd8738b6f82d51a9c969b6e5031a1b400ea87c1648ed0e47",
+      "src/DotnetDiagnostics.Mcp/Tools/CollectSampleTool.cs": "eb96fff0f0536d429b347120b1c76c99334599c309c812c11afd477727be86ff",
+      "src/DotnetDiagnostics.Mcp/Tools/DiagnosticToolSampling.cs": "ffa75c468dd3ca1d4119573e20d267d643a9bae3d4b5831878a4adbe94b8f2a3",
+      "tests/DotnetDiagnostics.TestSupport/LiveSampleProcess.cs": "256a4ac195265f1b4bfd5ccb5de1f97a26f66d809ac4a67f7d8f1f845da8c45a",
+      "tests/DotnetDiagnostics.TestSupport/LiveSampleOptions.cs": "64f10e6a82356ee918071421878191638a540b16fff6f78d77c00cf61b3b6eb8",
+      "tests/DotnetDiagnostics.TestSupport/DiagnosticReadiness.cs": "338e678ba94da47cb5277abe87246f287b52686cd2ddbe8a6b135dbc54d4d65a",
+      "tests/DotnetDiagnostics.TestSupport/SampleLocator.cs": "b5d07283e4b62296e1e07b46365e704dbb48129663107d040741f51fa6fb9ec0",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalContracts.cs": "f1960cd0ea9b8f677118d2869937e4f480a7b7afc2d59515a5f81de350283c7c",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalAttemptClassifier.cs": "275df286211319cba0dd4f838174ae766496fd9d748917e0202fcdbd6e90869d",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalCalibration.cs": "e3c945ce4cdef9678c5d594a63873c6dcef3e4de3b8f55d06c5d29458e06d026",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalHarness.cs": "796e394887d8d6ad344af395a6ea2be4849b991d76c6773c9c5e664f3f517a0c",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalV3Harness.cs": "a147d421b3e12cd412632241d1a047500f3619c2ab8b0f99fedd00a198613298",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalJson.cs": "0e1a540f833987886f9dc4861218c770b05ddf755ba08c64e8ec4028604b69a4",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalLedger.cs": "206dc3f0ee2334d524ea5ea099824da665b1a9ec771c9c374925eb4e970bdf99",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalLive.cs": "6327b4c6c913348ab616286f0f2d65496a0c67d38aef2e240df1fb86e8fdbbdc",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalPlan.cs": "63402724135ab586aaf1e2867f37a8bb52bf5c113c9e677dfed14fbf63e43914",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalProjection.cs": "991b30c6dfdf56e2091b320a5d7ec879a3cb110afb7b1ab5e988ea4ec68387f5",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalProtocol.cs": "01abdf1729b29d0dd7523594b321b3e36dbf1f588f2796f58426c65da44be39d",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalV3ProtocolDocument.cs": "fdb538e38ddf0fd0f11607f21fe04575a5f7105af453f4d2f6b2467bab891d16",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalV3Protocol.cs": "a1df96791bec6158aee8f556a46dba8a33dc402d50dde794736bbe7f93bc7c80",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalV3Tests.cs": "e6ae727b8e11500c475e712adedff69c41da0f9cdd11006a29db24269eddb566"
+    },
+    "runtimeArtifactsSha256": {
+      "samples/BadCodeSample/bin/Release/net10.0/BadCodeSample.deps.json": "8062a7d379e4f5cbf6b2434acbcad4fe85f40c2a491e817deb09e2495b87af51",
+      "samples/BadCodeSample/bin/Release/net10.0/BadCodeSample.dll": "4d5979e28d2d3416a7d938d2d34600bfb9eaca102288b8469ffc295e87d5bf2d",
+      "samples/BadCodeSample/bin/Release/net10.0/BadCodeSample.runtimeconfig.json": "94b92d437d5be753ff0ba94af9064dbd50f8bf1a7459debbedf6cb5699910d50",
+      "samples/BadCodeSample/bin/Release/net10.0/Microsoft.Data.Sqlite.dll": "ecabec2922b5ae8c2a2e037d6f31275d18d87df33077551008f9ad7c30379b1c",
+      "samples/BadCodeSample/bin/Release/net10.0/Microsoft.EntityFrameworkCore.Abstractions.dll": "ce57cf5176bcb701644ec4a66fddb4cb74885a3307663a00d57d3e826f5c506a",
+      "samples/BadCodeSample/bin/Release/net10.0/Microsoft.EntityFrameworkCore.Relational.dll": "672f721aa1a046baa776e8e558dbfa5feb6936f185687611007129c8b85a7d6a",
+      "samples/BadCodeSample/bin/Release/net10.0/Microsoft.EntityFrameworkCore.Sqlite.dll": "f7e0a7c402d3067b1113ba90fb817857d23e234ed30e986985b44b43c291a41b",
+      "samples/BadCodeSample/bin/Release/net10.0/Microsoft.EntityFrameworkCore.dll": "d9e2824485fd07188359b2c3247087c720b88b5b3dde53a814de9cdc43d876e4",
+      "samples/BadCodeSample/bin/Release/net10.0/Microsoft.Extensions.DependencyModel.dll": "ca95f1aa49ad6dd47714dbdfbfd0d34ec0983b1471a0c40d485b701705813ba7",
+      "samples/BadCodeSample/bin/Release/net10.0/SQLitePCLRaw.batteries_v2.dll": "94ac800c6b93ae50a025f247547781debe18391110667c5e242f51d8ac188ffb",
+      "samples/BadCodeSample/bin/Release/net10.0/SQLitePCLRaw.core.dll": "3d2ed8e186f124f988ebdb45d0354185b424357be2433bba0033ab9ec31bd25b",
+      "samples/BadCodeSample/bin/Release/net10.0/SQLitePCLRaw.provider.e_sqlite3.dll": "232990c8372aff30574eef9cc280b486ee6f39f8a66f83ea495dd0dbae98740c",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Azure.Core.dll": "1d6df436afdc73c30d476be938f6513c90ef8fc884a7bae280091a9bed0a5490",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Azure.Identity.dll": "31574a3d35ffeb0e25a00ebb317937222fe5283b91af608613f2e3bf0f26c50a",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Azure.ResourceManager.AppContainers.dll": "d5430dab7da44f48d06386f02f3d6d7d0a0c7511d41b327d5cc0491f55c6eaee",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Azure.ResourceManager.AppService.dll": "af8a7c885b86b5718be479a33552cff00295f2833bc3efcf687f8687e53d3f5a",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Azure.ResourceManager.ContainerService.dll": "81899a9f8baf63b44914b1179e0450b878f3d27fbaf1fc686bd609893bd3a85a",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Azure.ResourceManager.dll": "d2dba4ad828a926b31867413606b727e5963975b2df18c27f582a01f7790ad18",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Dia2Lib.dll": "6c4cac68010fe032218efe5e9fcf46eef9f77bfaa5f3bd33f03c5ff77d5a8fac",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/DotnetDiagnostics.Core.dll": "9fd296fd82171550cfba740be613ea9d7ad670ab89bc5463c607a287d86528ad",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/DotnetDiagnostics.Mcp.deps.json": "510b82dc804b145671eb64725e7e0a46814234b5bec148a704d39b18db57486d",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/DotnetDiagnostics.Mcp.dll": "66cf7c674d3a88d9356fb9ae42468ff0fb048d62ce5ea1b9af4bf6abebe1d794",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/DotnetDiagnostics.Mcp.runtimeconfig.json": "41442586a8262bc96a1c80f82f4d9384c03bfd465d221cbf01fb3563170f9e65",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Fractions.dll": "e8407a878af8aec1f485f50a9f356c439371610fff20756d4f2284ac6c995cbf",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/KubernetesClient.dll": "1fdb3ddc3db829a3f4015afc328a00d3747fb228c7866df6f765be4cedb800ce",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.AspNetCore.Authentication.JwtBearer.dll": "4e07e8d048534a8446e8f3ded3a86f04efde7018d903f77a40f274b92a22615a",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Bcl.AsyncInterfaces.dll": "f1e1d6e1a2990071b450bdf6c9618408ac0e3f24a3c7a3bef1f50508ba732ca5",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Data.Sqlite.dll": "ecabec2922b5ae8c2a2e037d6f31275d18d87df33077551008f9ad7c30379b1c",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Diagnostics.FastSerialization.dll": "ec85c745323519b1e92ac2b680320f90517bed1a7982cff8153a192737a2a243",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Diagnostics.NETCore.Client.dll": "e2cc9e1f6c97b3c4ee45ebabaa92408eb9b2fc81cb08ceeb342fe48bf79db15f",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Diagnostics.Runtime.dll": "52d5f113180bb0f70b1a9b10608aef93b187364ac689885d2d3c734102d850a2",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Diagnostics.Tracing.TraceEvent.dll": "4251a4352098b77857ab70286f45718df373cc709e7cb4448843e6ab252e50fb",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Extensions.AI.Abstractions.dll": "bcc8f693103eb00505179f154b1b3a996b85d067e112facd724fd9d695f17a5e",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Identity.Client.Extensions.Msal.dll": "07109a2f30df782300077a567ade47cbd0a0502c75cd7c8a62192f7d64bb004e",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.Identity.Client.dll": "5795027e9ae95eececb310a4fed3c502bb368039d186ab0884f64b7792b84717",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.IdentityModel.Abstractions.dll": "24e97b54b6b5c234a124a336757e3116617ac6c30b655cdae74517dc2ecb5746",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.IdentityModel.JsonWebTokens.dll": "e85d3d751b4254771f59ff8a14444ef701ba65efb84e312281d675c44536da71",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.IdentityModel.Logging.dll": "32ebeeb2163db6aa0a81659ff0b590894d78350c50c459196b6cc33c98ba21f3",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.IdentityModel.Protocols.OpenIdConnect.dll": "d1f7dbbb71cbf69f5242a74e43b632610ff5dca913f164d1dcf53b2f6e0046ac",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.IdentityModel.Protocols.dll": "7c8702a7f6c019d962faf4b8af2da751dc32af9b6be998688e774394fb5f8730",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/Microsoft.IdentityModel.Tokens.dll": "b2dacc5120971efceb60f6febfe9685fe5a509ddb803c45956a63fc36e67631b",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/ModelContextProtocol.AspNetCore.dll": "4a62028eadb2ed50a99189716d81e85c2b370bad16bb2e2f220e91be4fdb28ea",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/ModelContextProtocol.Core.dll": "b1752096ea9d2f38ba88e467f04aea43fb300d9a54d881c165f62b69028ee3ab",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/ModelContextProtocol.Extensions.Tasks.dll": "4cb438ed5cc216038c600330d827d66c629b6d95dfbae75307c7dfd4397d8974",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/ModelContextProtocol.dll": "8cd6f626c8d6a0a5ff3e154789d3fcde2b1d66a595c0ef0198e092c2c30fe93a",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/OpenTelemetry.Api.ProviderBuilderExtensions.dll": "5c5727de149a0232825774a8ee75b60581ce19ce8b944d422bd545e2e3d7f915",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/OpenTelemetry.Api.dll": "ca5ddb7a51bcbb1ab8bcc6484603c70a4077142a8745d521c4bd2363f9e7c217",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/OpenTelemetry.Exporter.OpenTelemetryProtocol.dll": "20bf20b94e2e92a73d20d97b81d9cd3b26ef0967ff29f80d84b421c4317ac77e",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/OpenTelemetry.Exporter.Prometheus.AspNetCore.dll": "60dcd62f532a61821328e52e511bd47db620c301c7105c4aaf70619c0f217d65",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/OpenTelemetry.Extensions.Hosting.dll": "a627ebf2a7d14e0f0b3c2568e6ee37773397de25c90ee89d4560422c42d8b945",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/OpenTelemetry.dll": "edc9799efd614cb083193d90eafcd99abf70496738c3065933093cf99d162cae",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/SQLitePCLRaw.batteries_v2.dll": "94ac800c6b93ae50a025f247547781debe18391110667c5e242f51d8ac188ffb",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/SQLitePCLRaw.core.dll": "3d2ed8e186f124f988ebdb45d0354185b424357be2433bba0033ab9ec31bd25b",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/SQLitePCLRaw.provider.e_sqlite3.dll": "232990c8372aff30574eef9cc280b486ee6f39f8a66f83ea495dd0dbae98740c",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/System.ClientModel.dll": "dec5e22b71a1685c5e6e97cd28b629f0aa6703fb87b6950df28e79fc1804290c",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/System.IdentityModel.Tokens.Jwt.dll": "83218e29958e265b4eebce62cda6d69d41e7bf1898b7fa21ed52102675f6dfe3",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/System.Memory.Data.dll": "2c1035b0106dbb2de7913d151e06071ed617bb58bbb3d6cd46a2dd0f6a03617b",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/System.Security.Cryptography.ProtectedData.dll": "80566f0839ece5946e66bf9f00d723e59e371ba1341a18e00c7c7a7c49298e1d",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/TraceReloggerLib.dll": "6830c0f1d3f3c17719181e73dd5cfa8ccbb3f3c575329d2120576545103467b5",
+      "src/DotnetDiagnostics.Mcp/bin/Release/net10.0/YamlDotNet.dll": "86f873f682c619a0c24e263dcdd15fe027104666641c92f503516671d61edda6"
+    },
+    "preservedArtifactsSha256": {
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v1.protocol.json": "ef12d0f6caa48cc2e4be51317f19142094e3d3e8c75af5b8ffd4a7bc2610713a",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v1.windows-x64.evidence.execution.json": "06b917e17524f9f4b2ffb4ebfa0dd504327a49a2fa59b2fb8efc37df92bc7dfc",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v1.windows-x64.evidence.json": "c251312571df99ea1a4d2e5c10b53c8adf4a2347ea2a24b0ef67dedbde061c50",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v1.windows-x64.evidence.ledger.jsonl": "087402d4a6813092a4c3f250b34713ba8c2e263eb269cec207036daa7dcaa690",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v1.windows-x64.evidence.report.json": "12ec9b0ecf6f551111af899e50af6ce9e635f3be2a6b7b505dea3773e058e7c4",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v2.protocol.json": "20af784db457c573ae0c3b7c5cb21ff5db99b94cd4cc6ea8567f899e60699d53",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v2.windows-x64.evidence.execution.json": "a29d43bddba2d955969c275a5e3f275d222cd947be6a7329b29626bfa48664fa",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v2.windows-x64.evidence.execution.report.json": "cb2cf09c3044df97f0c904ebb0717c1cf63d2167078e46a1d6fa886a920d403a",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v2.windows-x64.evidence.json": "d5c639412cf1e0ee446e1ed4018c4448ac672c6187b73134aa4ee5d3566b7a89",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v2.windows-x64.evidence.ledger.jsonl": "d61e4526ffe456823c8a16c989d9500700dc0355a24b083a5c728133e9d266dd",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-baseline-current-v2.windows-x64.evidence.report.json": "ebaf3f6c2ee3c8aa1ddbf457a6c7faa6a5dc56b7753d885a694bc6acc103570f",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-throughput-calibration-v1.windows-x64.json": "948f2100b8551dc921662d08f9c3af709232abc22e7062d23fc12d6724b65e18",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional/allocation-directional-throughput-calibration-v1.windows-x64.report.json": "9c62676f514bc70f0f0405f0186c39f515f59d336353e80707a1af9826c1b4bc"
+    }
+  }
+}

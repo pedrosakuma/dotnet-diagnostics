@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-directional-baseline-current",
+  "protocolVersion": "3.0.0",
+  "decision": "inconclusive",
+  "aaMaximumAbsoluteEstimatedBytesPerOperationRelativeDelta": 0.0001186351430958457757835102,
+  "aaMaximumTypeShareMovement": 0.0000868853213275164131371492,
+  "aaMaximumSiteShareMovement": 0.0001239543911247187449209841,
+  "numericGatePassed": false,
+  "blindedEvaluationRequired": false,
+  "scenarios": [
+    {
+      "scenario": "trueIncrease",
+      "attemptedPairs": 6,
+      "validPairs": 0,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Directional movement requires three valid A/A pairs, three valid effect pairs, bounded A/A variability, and at least two non-outlier effect pairs."
+      ],
+      "assessable": false
+    },
+    {
+      "scenario": "mixShiftStableTotal",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": true,
+      "findings": [
+        "The mix-shift control did not retain stable normalized total plus paired absolute-and-share movement."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "throughputIncreaseStablePerOperation",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": true,
+      "findings": [
+        "The workload manipulation was established, but estimated sampled bytes per operation did not remain inside the workload-specific A/A envelope."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "lowerAllocationStableRetained",
+      "attemptedPairs": 6,
+      "validPairs": 3,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Directional movement requires three valid A/A pairs, three valid effect pairs, bounded A/A variability, and at least two non-outlier effect pairs."
+      ],
+      "assessable": false
+    },
+    {
+      "scenario": "warmupTransientConverges",
+      "attemptedPairs": 9,
+      "validPairs": 9,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": true,
+      "findings": [
+        "The robust converged-pair summary did not return inside the workload-specific A/A envelope."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "changedWorkload",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Every changed-workload pair abstained before directional interpretation."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "fixedStrideBias",
+      "attemptedPairs": 12,
+      "validPairs": 0,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Fixed-stride safety requires both workload-specific A/A inventories and both reorder directions."
+      ],
+      "assessable": false
+    },
+    {
+      "scenario": "partialAttribution",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Partial attribution did not preserve independent per-level availability."
+      ],
+      "assessable": false
+    },
+    {
+      "scenario": "missingOrZeroWeight",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Missing or zero-weight evidence produced explicit abstention and remained in the denominator."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "healthyAa",
+      "attemptedPairs": 3,
+      "validPairs": 3,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The three healthy A/A pairs define bounded evaluator-only variability envelopes."
+      ],
+      "assessable": true
+    }
+  ],
+  "limitations": [
+    "No measurement-quality field is model-visible. Compatibility, availability, provenance, fixed-stride limitations, and A/A envelopes are evaluator-only gates or explicit abstention reasons.",
+    "GCAllocationTick estimated bytes are sampled weights, not exact totals, retained bytes, object counts, severity, health, regression, or causality.",
+    "Each live side is a separately started process. Failed and aborted sides remain in pair denominators and are never retried or replaced.",
+    "Operations per second proves only the calibrated throughput manipulation; estimated sampled bytes per operation is the normalized allocation quantity.",
+    "Allocated types and allocation sites are independent inventories; no type-to-site relationship is inferred.",
+    "The numeric gate did not authorize blinded evaluation."
+  ],
+  "blindedEvaluationRan": false
+}
