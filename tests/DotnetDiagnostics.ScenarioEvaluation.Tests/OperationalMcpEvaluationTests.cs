@@ -14,9 +14,13 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ValidatePreservedV3();
         OperationalMcpProtocolLoader.ValidatePreservedV4();
         OperationalMcpProtocolLoader.ValidatePreservedV5();
+        OperationalMcpProtocolLoader.ValidatePreservedV6();
 
-        protocol.SchemaVersion.Should().Be(6);
-        protocol.ProtocolVersion.Should().Be("6.0.0");
+        protocol.SchemaVersion.Should().Be(7);
+        protocol.ProtocolVersion.Should().Be("7.0.0");
+        protocol.AssessorAdditiveProperties.Should().ContainSingle()
+            .Which.Should().Be(
+                new KeyValuePair<string, string>("nextSteps", "stringArray"));
         protocol.Models.Should().NotBeNull();
         protocol.Models!.DiagnosingPromptSha256.Should().Be(
             BlindedAgentHarness.SystemPromptSha256);
@@ -40,13 +44,13 @@ public sealed class OperationalMcpProtocolTests
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Heldout);
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(
-            protocol.Cases.Single(value => value.Id == "v6-dev-allocation-positive"));
+            protocol.Cases.Single(value => value.Id == "v7-dev-allocation-positive"));
         manifest.ReportedSymptom.Should().Contain(
             "already executed exactly 3 fresh collect_sample(kind=\"allocation\") captures");
         manifest.ReportedSymptom.Should().Contain(
             "query_snapshot(view=\"allocation-reproducibility\") sequence");
         manifest.ReportedSymptom.Should().Contain("follow-up can add evidence");
-        manifest.ReportedSymptom.Should().NotContain("v6-dev-allocation-positive");
+        manifest.ReportedSymptom.Should().NotContain("v7-dev-allocation-positive");
         manifest.ReportedSymptom.Should().NotContain("control");
         manifest.ReportedSymptom.Should().NotContain("current");
         manifest.ReportedSymptom.Should().NotContain("projection");
@@ -108,7 +112,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v6-dev-allocation-positive");
+            value.Id == "v7-dev-allocation-positive");
         var call = new AgentToolCall(
             "predeclared-query-1",
             "query_snapshot",
@@ -166,7 +170,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v6-dev-allocation-positive");
+            value.Id == "v7-dev-allocation-positive");
         var call = new AgentToolCall(
             "same-id",
             "query_snapshot",
@@ -268,6 +272,88 @@ public sealed class OperationalMcpProtocolTests
         preflight.Stage.Status.Should().Be(AgentHarnessStageStatus.Passed);
         preflight.TransportOutputBytes.Should().Be(4096);
         preflight.RawResponseSha256.Should().HaveLength(64);
+    }
+
+    [Fact]
+    public async Task AssessorPreflight_EnforcesFrozenAdditivePropertyPolicy()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-assessor-conformance-v7.fixture.json");
+        using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
+
+        foreach (var testCase in fixture.RootElement.GetProperty("cases").EnumerateArray())
+        {
+            var response = testCase.GetProperty("response").GetRawText();
+            var preflight = await OperationalMcpAssessor.PreflightAsync(
+                ModelConfiguration(),
+                new SingleTurnTransport(new AgentModelTurn(
+                    "wire",
+                    response,
+                    [],
+                    new AgentModelUsage(null, null, null),
+                    null)),
+                maximumWallTimeSeconds: 5,
+                maximumInputBytes: 32_768,
+                maximumTransportOutputBytes: 8_192,
+                protocol.AssessorAdditiveProperties,
+                CancellationToken.None);
+            var expectedStatus = testCase.GetProperty("expectedStatus").GetString();
+
+            if (expectedStatus == "passed")
+            {
+                preflight.Stage.Status.Should().Be(
+                    AgentHarnessStageStatus.Passed,
+                    testCase.GetProperty("id").GetString());
+                continue;
+            }
+
+            preflight.Stage.Status.Should().Be(
+                AgentHarnessStageStatus.Failed,
+                testCase.GetProperty("id").GetString());
+            preflight.Stage.Detail.Should().Contain(
+                testCase.GetProperty("expectedDetail").GetString(),
+                testCase.GetProperty("id").GetString());
+        }
+    }
+
+    [Fact]
+    public void ArtifactAccounting_CountsEachRetainedExchangeExactlyOnce()
+    {
+        var accounting = new OperationalMcpArtifactAccounting(maximumBytes: 100);
+
+        accounting.TryRetainAdmittedExchange(20, 30, maximumPayloadBytes: 40)
+            .Should().BeTrue();
+        accounting.RetainedBytes.Should().Be(50);
+        accounting.TryRetainAdmittedExchange(10, 15, maximumPayloadBytes: 40)
+            .Should().BeTrue();
+        accounting.RetainedBytes.Should().Be(75);
+        accounting.TryRetainAdmittedExchange(10, 15, maximumPayloadBytes: 40)
+            .Should().BeTrue();
+        accounting.RetainedBytes.Should().Be(100);
+        accounting.TryRetainAdmittedExchange(1, 1, maximumPayloadBytes: 40)
+            .Should().BeFalse();
+        accounting.TryRetainAdmittedExchange(41, 0, maximumPayloadBytes: 40)
+            .Should().BeFalse();
+        accounting.RetainedBytes.Should().Be(100);
+
+        var failureAccounting = new OperationalMcpArtifactAccounting(maximumBytes: 100);
+        failureAccounting.RetainFailureExchange(7, 11);
+        failureAccounting.RetainedBytes.Should().Be(18);
+    }
+
+    [Fact]
+    public void ProductFingerprint_NormalizesTextLineEndingsOnly()
+    {
+        var crlf = System.Text.Encoding.UTF8.GetBytes("alpha\r\nbeta\r\n");
+        var lf = System.Text.Encoding.UTF8.GetBytes("alpha\nbeta\n");
+
+        OperationalMcpProtocolLoader.NormalizeSourceBytesForFingerprint(".cs", crlf)
+            .Should().Equal(lf);
+        OperationalMcpProtocolLoader.NormalizeSourceBytesForFingerprint(".dll", crlf)
+            .Should().Equal(crlf);
     }
 
     [Fact]
@@ -1184,7 +1270,7 @@ public sealed class OperationalMcpLiveTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v6-dev-allocation-positive");
+            value.Id == "v7-dev-allocation-positive");
         var outputPath = Path.Combine(
             Path.GetTempPath(),
             "dotnet-diagnostics-predeclared-failure",
@@ -1297,7 +1383,7 @@ public sealed class OperationalMcpLiveTests
         OperationalMcpArm arm)
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var testCase = protocol.Cases.Single(value => value.Id == "v6-dev-allocation-positive");
+        var testCase = protocol.Cases.Single(value => value.Id == "v7-dev-allocation-positive");
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(testCase);
         var artifactRoot = Path.Combine(
             Path.GetTempPath(),
@@ -1374,6 +1460,9 @@ public sealed class OperationalMcpLiveTests
             wrongTarget.Succeeded.Should().BeFalse();
             wrongTarget.ErrorCode.Should().Be("target_not_authorized");
             OperationalMcpAssessor.CountUnauthorizedAttempts([wrongTargetApproval]).Should().Be(1);
+            gateway.RetainedArtifactBytes.Should().Be(
+                gateway.Exchanges.Sum(value =>
+                    value.RawResponseBytes + value.ModelVisibleResponseBytes));
         }
         finally
         {

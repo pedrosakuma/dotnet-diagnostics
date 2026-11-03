@@ -231,6 +231,9 @@ public sealed record OperationalMcpProtocol(
     public OperationalMcpModelFreeze? Models { get; init; }
 
     public string ExpectedProductFingerprint { get; init; } = "unavailable";
+
+    public IReadOnlyDictionary<string, string> AssessorAdditiveProperties { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<OperationalMcpExchangeOrigin>))]

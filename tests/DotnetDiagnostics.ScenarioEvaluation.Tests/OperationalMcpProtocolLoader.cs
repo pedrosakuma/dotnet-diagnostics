@@ -6,16 +6,36 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 internal static class OperationalMcpProtocolLoader
 {
-    public const int CurrentSchemaVersion = 6;
-    public const int CurrentRunSchemaVersion = 6;
-    public const int CurrentPilotSchemaVersion = 6;
-    internal const string FrozenProtocolVersion = "6.0.0";
+    private static readonly HashSet<string> TextSourceExtensions =
+    [
+        ".cs",
+        ".csproj",
+        ".c",
+        ".editorconfig",
+        ".h",
+        ".json",
+        ".md",
+        ".proj",
+        ".props",
+        ".py",
+        ".resx",
+        ".targets",
+        ".txt",
+        ".xml",
+        ".yml",
+        ".yaml",
+    ];
+
+    public const int CurrentSchemaVersion = 7;
+    public const int CurrentRunSchemaVersion = 7;
+    public const int CurrentPilotSchemaVersion = 7;
+    internal const string FrozenProtocolVersion = "7.0.0";
     internal const string FrozenProtocolFingerprint =
-        "4f1253d4a7360189ba97d6065a8ff962620c836cc039a3f5cedfd99e6beea574";
+        "100e1cba23022481b6323678ab6e75c53180b4a74af6326518db0dbc6532f044";
     internal const string FrozenInventoryFingerprint =
         "dbb9dcaf01f047e69302aa31e6a6638ab711e0fc9e09ed2bf1b713221af36259";
     internal const string FrozenProjectionFingerprint =
-        "52c2c4469df5bca88e64249d7237e59a7d462241faaee081d1145f48e5e92e80";
+        "93dcaedb2f80ba933e62ed354935d3de1ac8d8976ca3f9ba5c848ba0e0ddc017";
     internal const string PreservedV1FileSha256 =
         "c95d63300432d0d09e2b65bcab5b9fae0c2cfe8ee9ee2fef456714975b939891";
     internal const string PreservedV2FileSha256 =
@@ -26,12 +46,14 @@ internal static class OperationalMcpProtocolLoader
         "bb95d62708d42de0c84af290ca8c27f5220412e71622bd1d1e0d8374e8c41db6";
     internal const string PreservedV5FileSha256 =
         "4ed218ae50b857bdb5ebe664762b8a8faebc3cee52175dbaa2f26b4c71886e94";
+    internal const string PreservedV6FileSha256 =
+        "74a2878e5736e4b6c69f9cd2506c2c4ec055109f73943b7a3c77f2b04d4ba080";
 
     public static string DefaultPath
         => Path.Combine(
             AppContext.BaseDirectory,
             "OperationalMcp",
-            "operational-mcp-allocation-field-isolation-v6.protocol.json");
+            "operational-mcp-allocation-field-isolation-v7.protocol.json");
 
     public static string PreservedV1Path
         => Path.Combine(
@@ -62,6 +84,12 @@ internal static class OperationalMcpProtocolLoader
             AppContext.BaseDirectory,
             "OperationalMcp",
             "operational-mcp-allocation-measurement-quality-v5.protocol.json");
+
+    public static string PreservedV6Path
+        => Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-allocation-field-isolation-v6.protocol.json");
 
     public static OperationalMcpProtocol LoadDefault()
     {
@@ -138,6 +166,17 @@ internal static class OperationalMcpProtocolLoader
         }
     }
 
+    public static void ValidatePreservedV6()
+    {
+        var fileSha256 = Convert.ToHexStringLower(
+            SHA256.HashData(File.ReadAllBytes(PreservedV6Path)));
+        if (!string.Equals(fileSha256, PreservedV6FileSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The preserved operational MCP protocol 6.0.0 file changed.");
+        }
+    }
+
     public static string Fingerprint<T>(T value)
         => Convert.ToHexStringLower(
             SHA256.HashData(
@@ -188,11 +227,41 @@ internal static class OperationalMcpProtocolLoader
                 .Replace(Path.DirectorySeparatorChar, '/');
             hash.AppendData(Encoding.UTF8.GetBytes(relative));
             hash.AppendData([0]);
-            hash.AppendData(File.ReadAllBytes(path));
+            hash.AppendData(SourceBytesForFingerprint(path));
             hash.AppendData([0]);
         }
 
         return Convert.ToHexStringLower(hash.GetHashAndReset());
+    }
+
+    private static byte[] SourceBytesForFingerprint(string path)
+        => NormalizeSourceBytesForFingerprint(
+            Path.GetExtension(path),
+            File.ReadAllBytes(path));
+
+    internal static byte[] NormalizeSourceBytesForFingerprint(
+        string extension,
+        byte[] bytes)
+    {
+        if (!TextSourceExtensions.Contains(extension))
+        {
+            return bytes;
+        }
+
+        using var normalized = new MemoryStream(bytes.Length);
+        for (var index = 0; index < bytes.Length; index++)
+        {
+            if (bytes[index] == '\r'
+                && index + 1 < bytes.Length
+                && bytes[index + 1] == '\n')
+            {
+                continue;
+            }
+
+            normalized.WriteByte(bytes[index]);
+        }
+
+        return normalized.ToArray();
     }
 
     public static IReadOnlyList<OperationalMcpArm> ArmOrder(
@@ -218,7 +287,7 @@ internal static class OperationalMcpProtocolLoader
         if (testCase.Family != OperationalMcpFamily.AllocationReproducibility)
         {
             throw new InvalidDataException(
-                "Protocol 6.0.0 is allocation-only.");
+                "Protocol 7.0.0 is allocation-only.");
         }
 
         const string kind = "allocation";
@@ -283,6 +352,22 @@ internal static class OperationalMcpProtocolLoader
         RequireFingerprint(
             protocol.ExpectedCatalogFingerprint,
             nameof(protocol.ExpectedCatalogFingerprint));
+        if (protocol.AssessorAdditiveProperties.Count == 0
+            || protocol.AssessorAdditiveProperties.Any(value =>
+                string.IsNullOrWhiteSpace(value.Key)
+                || value.Value != "stringArray")
+            || protocol.AssessorAdditiveProperties.Keys.Any(value =>
+                value is "claims"
+                    or "uncertainty"
+                    or "uncertaintyRationale"
+                    or "unsupportedCertaintyFindings"
+                    or "usefulNextSteps"
+                    or "unhelpfulNextSteps"
+                    or "summary"))
+        {
+            throw new InvalidDataException(
+                "Protocol 7 must explicitly declare typed, non-canonical additive assessor properties.");
+        }
         _ = protocol.Budgets.ToAgentBudget();
         if (protocol.Budgets.MaximumSuiteWallTimeSeconds is < 1 or > 14_400)
         {
@@ -370,7 +455,7 @@ internal static class OperationalMcpProtocolLoader
         if (!eligible.SetEquals([OperationalMcpFamily.AllocationReproducibility]))
         {
             throw new InvalidDataException(
-                "The frozen v6 protocol must contain only allocation reproducibility.");
+                "The frozen v7 protocol must contain only allocation reproducibility.");
         }
 
         foreach (var entry in protocol.Inventory)
@@ -598,10 +683,11 @@ internal static class OperationalMcpProtocolLoader
                         || value.Id.Contains("v2", StringComparison.Ordinal)
                         || value.Id.Contains("v3", StringComparison.Ordinal)
                         || value.Id.Contains("v4", StringComparison.Ordinal)
-                        || value.Id.Contains("v5", StringComparison.Ordinal)))
+                        || value.Id.Contains("v5", StringComparison.Ordinal)
+                        || value.Id.Contains("v6", StringComparison.Ordinal)))
                 {
                     throw new InvalidDataException(
-                        "The v6 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
+                        "The v7 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
                 }
             }
 
@@ -642,7 +728,7 @@ internal static class OperationalMcpProtocolLoader
             || !developmentClasses.Contains(OperationalMcpCaseClass.HealthyControl))
         {
             throw new InvalidDataException(
-                "The v6 development partition must contain one positive and one healthy allocation case.");
+                "The v7 development partition must contain one positive and one healthy allocation case.");
         }
     }
 

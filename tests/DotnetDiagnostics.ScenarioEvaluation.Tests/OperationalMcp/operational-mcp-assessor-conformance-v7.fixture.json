@@ -1,0 +1,112 @@
+{
+  "cases": [
+    {
+      "id": "protocol6-nextSteps-addition",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "The synthetic evidence exists."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "The response is limited to preflight.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Schema preflight passed.",
+        "nextSteps": [
+          "Inspect the retained evidence."
+        ]
+      },
+      "expectedStatus": "passed"
+    },
+    {
+      "id": "malformed-nextSteps-addition",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "The synthetic evidence exists."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "The response is limited to preflight.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Schema preflight passed.",
+        "nextSteps": "Inspect the retained evidence."
+      },
+      "expectedStatus": "failed",
+      "expectedDetail": "Additive assessment property 'nextSteps' must be an array of strings."
+    },
+    {
+      "id": "undeclared-addition",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "The synthetic evidence exists."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "The response is limited to preflight.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Schema preflight passed.",
+        "commentary": "This property was not declared by the frozen protocol."
+      },
+      "expectedStatus": "failed",
+      "expectedDetail": "Unexpected assessment property 'commentary'."
+    },
+    {
+      "id": "contradictory-next-step-classification",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "supported",
+            "rationale": "The synthetic evidence exists."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "The response is limited to preflight.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [
+          "Repeat the capture."
+        ],
+        "unhelpfulNextSteps": [
+          "Repeat the capture."
+        ],
+        "summary": "Schema preflight passed."
+      },
+      "expectedStatus": "failed",
+      "expectedDetail": "The same next step cannot be classified as both useful and unhelpful."
+    },
+    {
+      "id": "invalid-required-enum",
+      "response": {
+        "claims": [
+          {
+            "index": 0,
+            "support": "definitelySupported",
+            "rationale": "The synthetic evidence exists."
+          }
+        ],
+        "uncertainty": "appropriate",
+        "uncertaintyRationale": "The response is limited to preflight.",
+        "unsupportedCertaintyFindings": [],
+        "usefulNextSteps": [],
+        "unhelpfulNextSteps": [],
+        "summary": "Schema preflight passed."
+      },
+      "expectedStatus": "failed",
+      "expectedDetail": "Claim support value was invalid."
+    }
+  ]
+}
