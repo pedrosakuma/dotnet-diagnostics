@@ -14,6 +14,10 @@ internal static class AllocationDirectionalEnvironmentVariables
         "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V2_FIXTURE_PATH";
     public const string ReportReevaluationFixturePath =
         "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V2_REEVALUATE_FIXTURE_PATH";
+    public const string V3FixturePath =
+        "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V3_FIXTURE_PATH";
+    public const string V3ProtocolFreezePath =
+        "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V3_PROTOCOL_FREEZE_PATH";
 }
 
 public static class AllocationDirectionalLive
@@ -26,9 +30,41 @@ public static class AllocationDirectionalLive
     public static async Task<AllocationDirectionalFixture> CaptureAsync(
         string ledgerPath,
         CancellationToken cancellationToken)
+        => await CaptureCoreAsync(
+            ledgerPath,
+            AllocationDirectionalCapturePlan.Entries,
+            AllocationDirectionalProtocol.ValidateFrozen,
+            AllocationDirectionalHarness.ProtocolId,
+            AllocationDirectionalHarness.ProtocolVersion,
+            "v2-partial",
+            "partial-attribution-v2",
+            cancellationToken).ConfigureAwait(false);
+
+    public static async Task<AllocationDirectionalFixture> CaptureV3Async(
+        string ledgerPath,
+        CancellationToken cancellationToken)
+        => await CaptureCoreAsync(
+            ledgerPath,
+            AllocationDirectionalV3CapturePlan.Entries,
+            AllocationDirectionalV3Protocol.ValidateFrozen,
+            AllocationDirectionalV3Protocol.ProtocolId,
+            AllocationDirectionalV3Protocol.ProtocolVersion,
+            "v3-partial",
+            "partial-attribution-v3",
+            cancellationToken).ConfigureAwait(false);
+
+    private static async Task<AllocationDirectionalFixture> CaptureCoreAsync(
+        string ledgerPath,
+        IReadOnlyList<AllocationDirectionalPlanEntry> entries,
+        Func<AllocationDirectionalProtocolProvenance> validateFrozen,
+        string protocolId,
+        string protocolVersion,
+        string partialPairPrefix,
+        string partialWorkloadIdentity,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ledgerPath);
-        var protocol = AllocationDirectionalProtocol.ValidateFrozen();
+        var protocol = validateFrozen();
         ValidateFrozenRuntimeResolution();
         var artifactRoot = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
@@ -40,7 +76,7 @@ public static class AllocationDirectionalLive
         try
         {
             var pairs = new List<AllocationDirectionalPair>();
-            foreach (var plan in AllocationDirectionalCapturePlan.Entries)
+            foreach (var plan in entries)
             {
                 for (var repetition = 1;
                      repetition <= AllocationDirectionalBounds.RequiredPairs;
@@ -60,7 +96,10 @@ public static class AllocationDirectionalLive
                 }
             }
 
-            AddPartialAttributionControls(pairs);
+            AddPartialAttributionControls(
+                pairs,
+                partialPairPrefix,
+                partialWorkloadIdentity);
             AllocationDirectionalLedger.ValidateExactTerminalAccounting(
                 ledgerPath,
                 pairs.Where(pair => pair.Baseline.Origin == AllocationDirectionalOrigin.LiveMcp)
@@ -72,8 +111,8 @@ public static class AllocationDirectionalLive
                     .ToArray());
             return new(
                 AllocationDirectionalJson.CurrentSchemaVersion,
-                AllocationDirectionalHarness.ProtocolId,
-                AllocationDirectionalHarness.ProtocolVersion,
+                protocolId,
+                protocolVersion,
                 protocol.ProtocolSha256,
                 protocol.ProtocolSha256,
                 [],
@@ -536,7 +575,9 @@ Complete:
         };
 
     private static void AddPartialAttributionControls(
-        List<AllocationDirectionalPair> pairs)
+        List<AllocationDirectionalPair> pairs,
+        string pairPrefix,
+        string workloadIdentity)
     {
         var increases = pairs.Where(pair =>
                 pair.Scenario == AllocationDirectionalScenario.TrueIncrease
@@ -545,23 +586,23 @@ Complete:
         if (increases.Length != AllocationDirectionalBounds.RequiredPairs)
         {
             throw new InvalidDataException(
-                "Partial-attribution controls require exactly the three predeclared v2 increase-effect pairs.");
+                "Partial-attribution controls require exactly the three predeclared increase-effect pairs.");
         }
         for (var index = 0; index < AllocationDirectionalBounds.RequiredPairs; index++)
         {
             var increase = increases[index];
             pairs.Add(new(
-                $"v2-partial-{index + 1:D2}",
+                $"{pairPrefix}-{index + 1:D2}",
                 AllocationDirectionalScenario.PartialAttribution,
                 "allocation-volume",
                 Project(
                     increase.Baseline,
-                    $"v2-partial-{index + 1:D2}-baseline",
-                    "partial-attribution-v2"),
+                    $"{pairPrefix}-{index + 1:D2}-baseline",
+                    workloadIdentity),
                 Project(
                     increase.Current,
-                    $"v2-partial-{index + 1:D2}-current",
-                    "partial-attribution-v2",
+                    $"{pairPrefix}-{index + 1:D2}-current",
+                    workloadIdentity,
                     attributionState: "partial",
                     removeSites: true)));
         }
@@ -810,5 +851,57 @@ public sealed class AllocationDirectionalReportTests
             FileShare.None);
         using var writer = new StreamWriter(stream);
         writer.Write(AllocationDirectionalJson.SerializeReport(report));
+    }
+
+    [Collection(ScenarioEvaluationLiveGroup.Name)]
+    public sealed class AllocationDirectionalV3LiveTests
+    {
+        [EnvironmentRequiredFact(
+            AllocationDirectionalEnvironmentVariables.V3FixturePath,
+            "The frozen one-time allocation directional v3 fixture capture requires an explicit output path.",
+            Timeout = 7_200_000)]
+        [Trait("Category", "ScenarioEvaluationLive")]
+        public async Task FrozenRealMcpV3Capture_WritesEveryAttemptOnce()
+        {
+            var fixturePath = Environment.GetEnvironmentVariable(
+                AllocationDirectionalEnvironmentVariables.V3FixturePath)
+                ?? throw new InvalidOperationException(
+                    "The frozen v3 fixture path was not configured.");
+            fixturePath.Should().NotBeNullOrWhiteSpace();
+            var ledgerPath = System.IO.Path.ChangeExtension(
+                fixturePath,
+                ".ledger.jsonl");
+            var reportPath = System.IO.Path.ChangeExtension(
+                fixturePath,
+                ".report.json");
+            File.Exists(fixturePath).Should().BeFalse(
+                "the frozen v3 fixture must not overwrite or retry an earlier execution");
+            File.Exists(ledgerPath).Should().BeFalse(
+                "a v3 attempt ledger proves a prior partial or complete execution already started");
+            File.Exists(reportPath).Should().BeFalse(
+                "the frozen v3 report must not overwrite an earlier execution");
+
+            var fixture = await AllocationDirectionalLive.CaptureV3Async(
+                ledgerPath,
+                CancellationToken.None);
+            AllocationDirectionalJson.WriteFixture(fixturePath, fixture);
+
+            fixture.Pairs.Should().HaveCount(
+                AllocationDirectionalV3CapturePlan.TotalPairs);
+            fixture.Pairs.SelectMany(pair => new[] { pair.Baseline, pair.Current })
+                .Count(observation =>
+                    observation.Origin == AllocationDirectionalOrigin.LiveMcp)
+                .Should().Be(AllocationDirectionalV3CapturePlan.LiveMcpSides);
+            fixture.Pairs.Should().OnlyContain(pair =>
+                pair.Baseline.AttemptId != pair.Current.AttemptId);
+            var report = AllocationDirectionalV3Harness.Evaluate(fixture);
+            using var reportStream = new FileStream(
+                reportPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None);
+            using var writer = new StreamWriter(reportStream);
+            writer.Write(AllocationDirectionalJson.SerializeReport(report));
+        }
     }
 }
