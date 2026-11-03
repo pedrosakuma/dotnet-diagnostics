@@ -4,7 +4,7 @@ Issue: [#1374](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1374)
 
 Parent: [#1348](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1348)
 
-Blocked follow-up: [#1350](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1350)
+Dependent follow-up: [#1350](https://github.com/pedrosakuma/dotnet-diagnostics/issues/1350)
 
 Prerequisite #1372 merged as
 `45f083f7621df6c435d03167d409ffd238f5f1d6`.
@@ -243,8 +243,11 @@ catalog, wording, directional allocation implementation, or automatic
 severity, dominance, causality, regression, health, leak, or
 optimization-priority verdict.
 
-#1350 remains blocked and unstarted because Wave 0 did not identify a safe
-model-visible quality subset for directional allocation feasibility.
+Protocol 10 resolves #1350's measurement-quality dependency as the empty
+model-visible subset: allocation quality fields remain provenance-only and are
+not shown to the diagnosing model. #1350 can therefore proceed to directional
+feasibility under that constraint, but Protocol 10 does not start or implement
+that work.
 
 ## Limitations
 
@@ -268,4 +271,5 @@ model-visible quality subset for directional allocation feasibility.
 - Protocols 1 through 9 remain preserved and unchanged.
 - No product source changed.
 - No directional allocation product work was started.
-- #1350 remains blocked.
+- #1350 remains unstarted; its prerequisite is resolved as no model-visible
+  allocation quality fields.
