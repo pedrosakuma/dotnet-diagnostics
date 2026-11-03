@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-directional-baseline-current",
+  "protocolVersion": "1.0.0",
+  "status": "frozen",
+  "frozenAtUtc": "2026-11-03T15:49:07Z",
+  "prerequisiteCommit": "402c3d2fefc8bb094b7341e5482559ce953f9395",
+  "sourceBaseCommit": "402c3d2fefc8bb094b7341e5482559ce953f9395",
+  "frozenInputs": {
+    "textHashCanonicalization": "utf8-no-bom-crlf",
+    "sourceFilesSha256": {
+      "global.json": "29bafcc8fddcedd9662e2f2969697bfa84dd8e43758856113696fb1af3d96cd5",
+      "samples/BadCodeSample/AllocationShapeWorkload.cs": "9902938dacf5007ca11cd2e48eccc0de86428e4f29bd10366ee8484ec1f6155d",
+      "samples/BadCodeSample/Program.cs": "1341bf1f3aa4255ad6317ee97208a44d3b268ead0d5f039a3831a7519a64d442",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalContracts.cs": "e299b50d50d5a96df41ad18b2977681925724f57882cd8e1bab2d89a503e3dc8",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalHarness.cs": "059822f5fead105834a1e7174a3530a0f758071dea5e0b52d44c899b772828ca",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalJson.cs": "1febba3a7f93c2ac6f74a1339667cfe64410678b9f9c0bb4998f54c3fa685ef2",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalLive.cs": "9899e4ea95f798dc95705175ad282d4cb12a2ce61655a1dd5745127a3a1afc3c",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalPlan.cs": "2c6e8f1e1ccfc19df77e3becceb1fce79f0fef1483db6a9354dcc689de22287b",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalProtocol.cs": "50e8a4f74abc914cada81165586d0f360baeeb8b828d9cb7ade75794f50a90bd"
+    }
+  },
+  "modelVisibleMeasurementQualityFields": [],
+  "independenceUnit": "one separately started target process per baseline or current observation",
+  "requiredIndependentPairs": 3,
+  "inventory": {
+    "totalPairs": 39,
+    "liveMcpPairs": 36,
+    "controlledProjectionPairs": 3,
+    "liveMcpSides": 72,
+    "controlledProjectionSides": 6
+  },
+  "capture": {
+    "durationSeconds": 4,
+    "armDelayMilliseconds": 900,
+    "workloadMilliseconds": 1500,
+    "defaultWarmupMilliseconds": 180,
+    "topN": 16,
+    "attemptTimeoutSeconds": 45,
+    "mcpCompletionTimeoutSeconds": 30,
+    "targetRuntimeEnvironment": {
+      "DOTNET_gcServer": "0",
+      "DOTNET_TieredCompilation": "1",
+      "DOTNET_TC_QuickJit": "1",
+      "DOTNET_TieredPGO": "1"
+    }
+  },
+  "capturePlan": [
+    {
+      "scenario": "HealthyAa",
+      "pairPrefix": "aa",
+      "comparisonAxis": "same-workload",
+      "baseline": { "workloadIdentity": "healthy-aa-primary-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "healthy-aa-primary-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "TrueIncrease",
+      "pairPrefix": "increase",
+      "comparisonAxis": "allocation-volume",
+      "baseline": { "workloadIdentity": "allocation-volume-v1", "shape": "low", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 64000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "allocation-volume-v1", "shape": "increased", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 576000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "MixShiftStableTotal",
+      "pairPrefix": "mix",
+      "comparisonAxis": "allocation-mix",
+      "baseline": { "workloadIdentity": "equal-payload-mix-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "equal-payload-mix-v1", "shape": "changed", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "ThroughputIncreaseStablePerOperation",
+      "pairPrefix": "throughput-aa",
+      "comparisonAxis": "same-load",
+      "baseline": { "workloadIdentity": "primary-throughput-v1", "shape": "primary", "workers": 2, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "primary-throughput-v1", "shape": "primary", "workers": 2, "phase": "aa", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "ThroughputIncreaseStablePerOperation",
+      "pairPrefix": "throughput-intensity",
+      "comparisonAxis": "load-intensity",
+      "baseline": { "workloadIdentity": "primary-throughput-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "primary-throughput-v1", "shape": "primary", "workers": 2, "phase": "intensity", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "FixedStrideBias",
+      "pairPrefix": "stride-aa",
+      "comparisonAxis": "same-order",
+      "baseline": { "workloadIdentity": "equal-payload-order-v1", "shape": "periodic-a", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 192000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "equal-payload-order-v1", "shape": "periodic-a", "workers": 1, "phase": "aa", "expectedPayloadBytesPerOperation": 192000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "FixedStrideBias",
+      "pairPrefix": "stride-reorder",
+      "comparisonAxis": "allocation-order",
+      "baseline": { "workloadIdentity": "equal-payload-order-v1", "shape": "periodic-a", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 192000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "equal-payload-order-v1", "shape": "periodic-b", "workers": 1, "phase": "reorder", "expectedPayloadBytesPerOperation": 192000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "LowerAllocationStableRetained",
+      "pairPrefix": "lower-retained",
+      "comparisonAxis": "allocation-volume",
+      "baseline": { "workloadIdentity": "retained-volume-v1", "shape": "increased", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 576000, "warmupMilliseconds": 180, "retainedBytes": 2097152, "driveWorkload": true },
+      "current": { "workloadIdentity": "retained-volume-v1", "shape": "low", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 64000, "warmupMilliseconds": 180, "retainedBytes": 2097152, "driveWorkload": true }
+    },
+    {
+      "scenario": "WarmupTransientConverges",
+      "pairPrefix": "warmup-early",
+      "comparisonAxis": "phase",
+      "baseline": { "workloadIdentity": "warmup-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "warmup-v1", "shape": "primary", "workers": 1, "phase": "early", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 0, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "WarmupTransientConverges",
+      "pairPrefix": "warmup-converged",
+      "comparisonAxis": "phase",
+      "baseline": { "workloadIdentity": "warmup-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "warmup-v1", "shape": "primary", "workers": 1, "phase": "converged", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "ChangedWorkload",
+      "pairPrefix": "changed-workload",
+      "comparisonAxis": "workload-identity",
+      "baseline": { "workloadIdentity": "request-mix-a-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "request-mix-b-v1", "shape": "changed", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true }
+    },
+    {
+      "scenario": "MissingOrZeroWeight",
+      "pairPrefix": "missing-denominator",
+      "comparisonAxis": "availability",
+      "baseline": { "workloadIdentity": "missing-denominator-v1", "shape": "primary", "workers": 1, "phase": "steady", "expectedPayloadBytesPerOperation": 288000, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": true },
+      "current": { "workloadIdentity": "missing-denominator-v1", "shape": "primary", "workers": 0, "phase": "missing", "expectedPayloadBytesPerOperation": 0, "warmupMilliseconds": 180, "retainedBytes": 0, "driveWorkload": false }
+    }
+  ],
+  "internalOnlyGates": {
+    "maximumAllowedAaRelativeDelta": 0.25,
+    "maximumAllowedAaTypeShareMovement": 0.25,
+    "maximumAllowedAaSiteShareMovement": 0.25,
+    "minimumThroughputMultiplier": 1.25,
+    "missingTypeOrSiteEvidence": "inconclusive",
+    "highAaVariability": "noGo"
+  },
+  "quantityOrder": [
+    "estimated sampled bytes per operation",
+    "estimated sampled bytes per second only when no operation denominator exists and explicitly load-sensitive",
+    "absolute allocated-type estimated-byte movement",
+    "absolute allocation-site estimated-byte movement",
+    "type/site share movement alongside absolute movement",
+    "allocation-tick movement as sampler provenance only"
+  ],
+  "units": {
+    "normalizedTotal": "estimated sampled bytes/operation",
+    "loadSensitiveTotal": "estimated sampled bytes/s",
+    "typeAndSiteAbsolute": "estimated sampled bytes/operation",
+    "share": "ratio",
+    "allocationTicks": "sampled ticks"
+  },
+  "failurePolicy": "Every predeclared side is attempted at most once. Failed and aborted sides remain in pair and scenario denominators. No favorable retry, replacement, or attempt deletion is permitted.",
+  "measurementQualityPolicy": "Compatibility, availability, attribution, loss, sampling limitations, and A/A envelopes are evaluator/provenance-only gates. They must never be serialized into the diagnosing model response, headline, or diagnostic signal.",
+  "executionStages": [
+    "deterministic protocol and decision-rule validation",
+    "independent cross-model protocol review",
+    "freeze protocol timestamp, hashes, identities, workloads, pair counts, and decision rule",
+    "one-time real-MCP fixture capture",
+    "numeric feasibility gate",
+    "blinded model evaluation only if every numeric gate passes",
+    "independent cross-model final-report review"
+  ],
+  "scenarios": [
+    {
+      "id": "true-increase",
+      "expected": "estimated sampled bytes per operation increases beyond the complete A/A envelope under the frozen compatible operation identity"
+    },
+    {
+      "id": "mix-shift-stable-total",
+      "expected": "normalized total remains inside A/A while both independent leading type and site inventories move"
+    },
+    {
+      "id": "throughput-increase-stable-per-operation",
+      "expected": "bytes/s rises with throughput while estimated sampled bytes per operation remains inside A/A"
+    },
+    {
+      "id": "lower-allocation-stable-retained",
+      "expected": "allocation decreases beyond A/A while the independently declared retained quantity remains unchanged"
+    },
+    {
+      "id": "warmup-transient-converges",
+      "expected": "an early movement beyond A/A returns inside A/A in the separately predeclared converged phase"
+    },
+    {
+      "id": "changed-workload",
+      "expected": "workload identity mismatch causes abstention before any directional interpretation"
+    },
+    {
+      "id": "fixed-stride-bias",
+      "expected": "equal-payload reordered allocation shapes do not create type/site share movement beyond A/A; any such movement is an immediate NO-GO"
+    },
+    {
+      "id": "partial-attribution",
+      "expected": "type evidence remains available while site evidence abstains independently"
+    },
+    {
+      "id": "missing-or-zero-weight",
+      "expected": "missing denominator or zero-weight evidence abstains and remains in denominators"
+    },
+    {
+      "id": "healthy-aa",
+      "expected": "three valid A/A pairs define evaluator-only maximum absolute total/type/site movement envelopes"
+    }
+  ],
+  "decisionRule": {
+    "numericGatePassed": "Every numeric scenario is assessable and matches its expected shape with no unsafe directional evidence. This state remains INCONCLUSIVE and only authorizes the frozen blinded evaluation.",
+    "go": "The numeric gate passed and the conditional blinded evaluation improved support or next-step usefulness without increasing any unsupported-certainty category.",
+    "noGo": "Any assessable control exposes unsafe direction, fixed-stride movement beyond A/A, normalization failure, false sustained/transient interpretation, or model certainty regression.",
+    "inconclusive": "Fewer than three valid independent pairs for any required live scenario, missing type/site evidence needed by a share gate, unresolved compatibility/availability, failed frozen accounting, or incomplete conditional blinded evaluation after numeric gate success."
+  },
+  "boundaries": [
+    "evidence fixtures, evaluator code, and research report only",
+    "no product schema, collector, retention, MCP tool, catalog, CLI, or VS Code contract",
+    "no automatic regression, improvement, severity, health, leak, dominance, causality, or optimization-priority verdict"
+  ]
+}

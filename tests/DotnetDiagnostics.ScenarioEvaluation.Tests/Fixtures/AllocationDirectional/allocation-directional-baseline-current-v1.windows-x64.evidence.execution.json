@@ -1,0 +1,1928 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-directional-baseline-current",
+  "protocolVersion": "1.0.0",
+  "protocolSha256": "9d60b47bdc30dffe7c3ec08ebb4d8673bded60091c1af43a67208c94090987d3",
+  "frozenAtUtc": "2026-11-03T15:49:07Z",
+  "sourceBaseCommit": "402c3d2fefc8bb094b7341e5482559ce953f9395",
+  "environment": "Microsoft Windows 10.0.26300; 10.0.14; X64",
+  "pairs": [
+    {
+      "pairId": "aa-01",
+      "scenario": "healthyAa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "attemptId": "aa-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "healthy-aa-primary-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "aa-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "healthy-aa-primary-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "aa-02",
+      "scenario": "healthyAa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "attemptId": "aa-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "healthy-aa-primary-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "aa-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "healthy-aa-primary-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "aa-03",
+      "scenario": "healthyAa",
+      "comparisonAxis": "same-workload",
+      "baseline": {
+        "attemptId": "aa-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "healthy-aa-primary-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "aa-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "healthy-aa-primary-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "increase-01",
+      "scenario": "trueIncrease",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "increase-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "allocation-volume-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "increase-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "allocation-volume-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "increase-02",
+      "scenario": "trueIncrease",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "increase-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "allocation-volume-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "increase-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "allocation-volume-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "increase-03",
+      "scenario": "trueIncrease",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "increase-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "allocation-volume-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "increase-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "allocation-volume-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "mix-01",
+      "scenario": "mixShiftStableTotal",
+      "comparisonAxis": "allocation-mix",
+      "baseline": {
+        "attemptId": "mix-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-mix-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "mix-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-mix-v1",
+        "shape": "changed",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "mix-02",
+      "scenario": "mixShiftStableTotal",
+      "comparisonAxis": "allocation-mix",
+      "baseline": {
+        "attemptId": "mix-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-mix-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "mix-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-mix-v1",
+        "shape": "changed",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "mix-03",
+      "scenario": "mixShiftStableTotal",
+      "comparisonAxis": "allocation-mix",
+      "baseline": {
+        "attemptId": "mix-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-mix-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "mix-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-mix-v1",
+        "shape": "changed",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "throughput-aa-01",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "same-load",
+      "baseline": {
+        "attemptId": "throughput-aa-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "throughput-aa-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "aa",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "throughput-aa-02",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "same-load",
+      "baseline": {
+        "attemptId": "throughput-aa-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "throughput-aa-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "aa",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "throughput-aa-03",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "same-load",
+      "baseline": {
+        "attemptId": "throughput-aa-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "throughput-aa-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "aa",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "throughput-intensity-01",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "load-intensity",
+      "baseline": {
+        "attemptId": "throughput-intensity-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "throughput-intensity-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "intensity",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "throughput-intensity-02",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "load-intensity",
+      "baseline": {
+        "attemptId": "throughput-intensity-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "throughput-intensity-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "intensity",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "throughput-intensity-03",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "load-intensity",
+      "baseline": {
+        "attemptId": "throughput-intensity-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "throughput-intensity-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "primary-throughput-v1",
+        "shape": "primary",
+        "phase": "intensity",
+        "workers": 2,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "stride-aa-01",
+      "scenario": "fixedStrideBias",
+      "comparisonAxis": "same-order",
+      "baseline": {
+        "attemptId": "stride-aa-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "stride-aa-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "stride-aa-02",
+      "scenario": "fixedStrideBias",
+      "comparisonAxis": "same-order",
+      "baseline": {
+        "attemptId": "stride-aa-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "stride-aa-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "stride-aa-03",
+      "scenario": "fixedStrideBias",
+      "comparisonAxis": "same-order",
+      "baseline": {
+        "attemptId": "stride-aa-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "stride-aa-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "stride-reorder-01",
+      "scenario": "fixedStrideBias",
+      "comparisonAxis": "allocation-order",
+      "baseline": {
+        "attemptId": "stride-reorder-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "stride-reorder-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-b",
+        "phase": "reorder",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "stride-reorder-02",
+      "scenario": "fixedStrideBias",
+      "comparisonAxis": "allocation-order",
+      "baseline": {
+        "attemptId": "stride-reorder-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "stride-reorder-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-b",
+        "phase": "reorder",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "stride-reorder-03",
+      "scenario": "fixedStrideBias",
+      "comparisonAxis": "allocation-order",
+      "baseline": {
+        "attemptId": "stride-reorder-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-a",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "stride-reorder-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "equal-payload-order-v1",
+        "shape": "periodic-b",
+        "phase": "reorder",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "lower-retained-01",
+      "scenario": "lowerAllocationStableRetained",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "lower-retained-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "retained-volume-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "lower-retained-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "retained-volume-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "lower-retained-02",
+      "scenario": "lowerAllocationStableRetained",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "lower-retained-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "retained-volume-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "lower-retained-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "retained-volume-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "lower-retained-03",
+      "scenario": "lowerAllocationStableRetained",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "lower-retained-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "retained-volume-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "lower-retained-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "retained-volume-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "warmup-early-01",
+      "scenario": "warmupTransientConverges",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "attemptId": "warmup-early-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "warmup-early-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "early",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "warmup-early-02",
+      "scenario": "warmupTransientConverges",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "attemptId": "warmup-early-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "warmup-early-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "early",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "warmup-early-03",
+      "scenario": "warmupTransientConverges",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "attemptId": "warmup-early-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "warmup-early-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "early",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "warmup-converged-01",
+      "scenario": "warmupTransientConverges",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "attemptId": "warmup-converged-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "warmup-converged-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "converged",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "warmup-converged-02",
+      "scenario": "warmupTransientConverges",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "attemptId": "warmup-converged-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "warmup-converged-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "converged",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "warmup-converged-03",
+      "scenario": "warmupTransientConverges",
+      "comparisonAxis": "phase",
+      "baseline": {
+        "attemptId": "warmup-converged-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "warmup-converged-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "warmup-v1",
+        "shape": "primary",
+        "phase": "converged",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "changed-workload-01",
+      "scenario": "changedWorkload",
+      "comparisonAxis": "workload-identity",
+      "baseline": {
+        "attemptId": "changed-workload-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "request-mix-a-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "changed-workload-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "request-mix-b-v1",
+        "shape": "changed",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "changed-workload-02",
+      "scenario": "changedWorkload",
+      "comparisonAxis": "workload-identity",
+      "baseline": {
+        "attemptId": "changed-workload-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "request-mix-a-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "changed-workload-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "request-mix-b-v1",
+        "shape": "changed",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "changed-workload-03",
+      "scenario": "changedWorkload",
+      "comparisonAxis": "workload-identity",
+      "baseline": {
+        "attemptId": "changed-workload-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "request-mix-a-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "changed-workload-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "request-mix-b-v1",
+        "shape": "changed",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "missing-denominator-01",
+      "scenario": "missingOrZeroWeight",
+      "comparisonAxis": "availability",
+      "baseline": {
+        "attemptId": "missing-denominator-01-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "missing-denominator-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "missing-denominator-01-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "missing-denominator-v1",
+        "shape": "primary",
+        "phase": "missing",
+        "workers": 0,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "missing-denominator-02",
+      "scenario": "missingOrZeroWeight",
+      "comparisonAxis": "availability",
+      "baseline": {
+        "attemptId": "missing-denominator-02-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "missing-denominator-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "missing-denominator-02-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "missing-denominator-v1",
+        "shape": "primary",
+        "phase": "missing",
+        "workers": 0,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "missing-denominator-03",
+      "scenario": "missingOrZeroWeight",
+      "comparisonAxis": "availability",
+      "baseline": {
+        "attemptId": "missing-denominator-03-baseline",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "missing-denominator-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      },
+      "current": {
+        "attemptId": "missing-denominator-03-current",
+        "outcome": "failed",
+        "origin": "liveMcp",
+        "workloadIdentity": "missing-denominator-v1",
+        "shape": "primary",
+        "phase": "missing",
+        "workers": 0,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator."
+        ]
+      }
+    },
+    {
+      "pairId": "partial-01",
+      "scenario": "partialAttribution",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "partial-01-baseline",
+        "outcome": "failed",
+        "origin": "controlledProjection",
+        "workloadIdentity": "partial-attribution-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator.",
+          "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt."
+        ]
+      },
+      "current": {
+        "attemptId": "partial-01-current",
+        "outcome": "failed",
+        "origin": "controlledProjection",
+        "workloadIdentity": "partial-attribution-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "partial",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator.",
+          "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt."
+        ]
+      }
+    },
+    {
+      "pairId": "partial-02",
+      "scenario": "partialAttribution",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "partial-02-baseline",
+        "outcome": "failed",
+        "origin": "controlledProjection",
+        "workloadIdentity": "partial-attribution-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator.",
+          "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt."
+        ]
+      },
+      "current": {
+        "attemptId": "partial-02-current",
+        "outcome": "failed",
+        "origin": "controlledProjection",
+        "workloadIdentity": "partial-attribution-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "partial",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator.",
+          "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt."
+        ]
+      }
+    },
+    {
+      "pairId": "partial-03",
+      "scenario": "partialAttribution",
+      "comparisonAxis": "allocation-volume",
+      "baseline": {
+        "attemptId": "partial-03-baseline",
+        "outcome": "failed",
+        "origin": "controlledProjection",
+        "workloadIdentity": "partial-attribution-v1",
+        "shape": "low",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "unavailable",
+        "types": [],
+        "sites": [],
+        "failureCategory": "InvalidOperationException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator.",
+          "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt."
+        ]
+      },
+      "current": {
+        "attemptId": "partial-03-current",
+        "outcome": "failed",
+        "origin": "controlledProjection",
+        "workloadIdentity": "partial-attribution-v1",
+        "shape": "increased",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 4,
+        "operations": 0,
+        "requestedPayloadBytesPerOperation": 0,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 0,
+        "sampledAllocationTicks": 0,
+        "attributionState": "partial",
+        "types": [],
+        "sites": [],
+        "failureCategory": "KeyNotFoundException",
+        "provenance": [
+          "The failed or aborted observation remains in its frozen pair denominator.",
+          "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt."
+        ]
+      }
+    }
+  ]
+}
