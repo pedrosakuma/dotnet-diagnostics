@@ -314,12 +314,19 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                 arguments,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             var raw = ResponseJson(result);
-            var projected = OperationalMcpResponseProjector.Apply(
-                raw,
-                _arm,
-                _projection,
-                out var didProject,
-                out var projectedSchema);
+            var errorCode = ErrorCode(result, raw);
+            var projected = errorCode is null
+                ? OperationalMcpResponseProjector.Apply(
+                    raw,
+                    _arm,
+                    _projection,
+                    out var didProject,
+                    out var projectedSchema)
+                : ModelVisibleFailure(
+                    raw,
+                    errorCode,
+                    out didProject,
+                    out projectedSchema);
             var rawBytes = Encoding.UTF8.GetByteCount(raw);
             var projectedBytes = Encoding.UTF8.GetByteCount(projected);
             if (Math.Max(rawBytes, projectedBytes) > _maximumMcpPayloadBytes
@@ -331,9 +338,8 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
                     "The exact MCP response plus model-visible projection exceeded the retained-artifact budget.",
                     origin);
             }
-
             _artifactBytes += rawBytes + projectedBytes;
-            var errorCode = ErrorCode(result, raw);
+            _artifactBytes += rawBytes + projectedBytes;
             var succeeded = errorCode is null;
             if (succeeded && call.Name == "collect_sample")
             {
@@ -646,6 +652,34 @@ internal sealed class OperationalMcpToolGateway : IBlindedDiagnosticToolGateway,
         }
 
         return "mcp_error";
+    }
+
+    private static string ModelVisibleFailure(
+        string raw,
+        string errorCode,
+        out bool didProject,
+        out string? projectedSchema)
+    {
+        didProject = false;
+        projectedSchema = null;
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            if (document.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                return raw;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            status = "failed",
+            errorCode,
+            detail = raw,
+        }, OperationalMcpJson.Options);
     }
 
     private void ReserveCapture(int seconds)

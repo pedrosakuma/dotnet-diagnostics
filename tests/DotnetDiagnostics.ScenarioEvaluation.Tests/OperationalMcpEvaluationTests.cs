@@ -13,9 +13,10 @@ public sealed class OperationalMcpProtocolTests
         OperationalMcpProtocolLoader.ValidatePreservedV2();
         OperationalMcpProtocolLoader.ValidatePreservedV3();
         OperationalMcpProtocolLoader.ValidatePreservedV4();
+        OperationalMcpProtocolLoader.ValidatePreservedV5();
 
-        protocol.SchemaVersion.Should().Be(5);
-        protocol.ProtocolVersion.Should().Be("5.0.0");
+        protocol.SchemaVersion.Should().Be(6);
+        protocol.ProtocolVersion.Should().Be("6.0.0");
         protocol.Models.Should().NotBeNull();
         protocol.Models!.DiagnosingPromptSha256.Should().Be(
             BlindedAgentHarness.SystemPromptSha256);
@@ -39,13 +40,13 @@ public sealed class OperationalMcpProtocolTests
         protocol.Cases.Should().Contain(value =>
             value.Partition == OperationalMcpPartition.Heldout);
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(
-            protocol.Cases.Single(value => value.Id == "v5-dev-allocation-positive"));
+            protocol.Cases.Single(value => value.Id == "v6-dev-allocation-positive"));
         manifest.ReportedSymptom.Should().Contain(
             "already executed exactly 3 fresh collect_sample(kind=\"allocation\") captures");
         manifest.ReportedSymptom.Should().Contain(
             "query_snapshot(view=\"allocation-reproducibility\") sequence");
         manifest.ReportedSymptom.Should().Contain("follow-up can add evidence");
-        manifest.ReportedSymptom.Should().NotContain("v5-dev-allocation-positive");
+        manifest.ReportedSymptom.Should().NotContain("v6-dev-allocation-positive");
         manifest.ReportedSymptom.Should().NotContain("control");
         manifest.ReportedSymptom.Should().NotContain("current");
         manifest.ReportedSymptom.Should().NotContain("projection");
@@ -107,7 +108,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v5-dev-allocation-positive");
+            value.Id == "v6-dev-allocation-positive");
         var call = new AgentToolCall(
             "predeclared-query-1",
             "query_snapshot",
@@ -165,7 +166,7 @@ public sealed class OperationalMcpProtocolTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v5-dev-allocation-positive");
+            value.Id == "v6-dev-allocation-positive");
         var call = new AgentToolCall(
             "same-id",
             "query_snapshot",
@@ -314,7 +315,7 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public void ResponseProjection_RemovesOnlyCandidateStatisticsAndDerivedPresentation()
+    public void ResponseProjection_LeavesOnlyDeclaredFieldDifferencesUnderSharedGuard()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var projection = protocol.Projections.Single();
@@ -323,25 +324,27 @@ public sealed class OperationalMcpProtocolTests
             {"summary":"Analyzed 3 identity-compatible allocation captures using descriptive bounded independent type and stack top-6 stability; stability does not establish workload dominance or a performance verdict.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","method":"bounded-top-k-jaccard-shared-key-spearman-v1","availability":"available","requestedCaptureCount":3,"availableCaptureCount":3,"independenceUnit":"capture","topK":6,"compatibility":{"status":"compatible","reasons":[]},"estimatedBytes":{"median":123.0,"rawMedianAbsoluteDeviation":4.0},"allocationTicks":{"median":4.0,"rawMedianAbsoluteDeviation":1.0},"allocatedTypeStability":{"pairCount":3,"membershipComparisonCount":3,"medianMembershipJaccard":0.8,"minimumMembershipJaccard":0.7,"sharedRankComparisonCount":3,"medianSharedKeySpearman":0.9,"minimumSharedKeySpearman":0.8,"membershipUnavailableReason":null,"sharedRankUnavailableReason":null},"allocationStackStability":{"pairCount":3,"membershipComparisonCount":3,"medianMembershipJaccard":0.6,"minimumMembershipJaccard":0.5,"sharedRankComparisonCount":3,"medianSharedKeySpearman":0.7,"minimumSharedKeySpearman":0.6,"membershipUnavailableReason":null,"sharedRankUnavailableReason":null},"captures":[{"handle":"h-1","handleStatus":"available","attributionState":"partial"}],"assumptions":["Each input is one separately started and stopped allocation capture.","Identity-compatible captures reported the same runtime semantics, EventPipe allocation backend, requested duration and retained top-N bounds.","Any assertion that workload shape, request mix, intensity or execution conditions were equivalent is caller-supplied and was not verified by capture identity."],"limitations":["GCAllocationTick estimated bytes are runtime sampling weights, not exact allocation totals, retained bytes, object counts or CPU time.","Stable top-K membership or rank describes retained sampled inventories only; it does not prove that a type or call site dominates the workload.","Allocated types and allocation stack sites are independent ranked inventories; no type-to-stack relationship is inferred or serialized.","Capture-level medians and raw median absolute deviations are descriptive only. No confidence interval is computed over weighted allocation ticks.","Capture identity compatibility covers recorded runtime, backend and requested capture settings only; it does not verify equivalent request mix, workload intensity or execution conditions.","Reproducibility is descriptive only: no universal scenario threshold or causal, severity, regression, health, performance or optimization-priority verdict is produced.","Missing, partial, zero-weight, unavailable or empty attribution and bounded inventories do not mean zero allocation activity; they describe observation or attribution limits for that capture."]},"handle":"h-1","cancelled":false}
             """;
 
-        var current = OperationalMcpResponseProjector.Apply(
+        _ = OperationalMcpResponseProjector.Apply(
             raw,
             OperationalMcpArm.CompleteCurrent,
             projection,
             out var currentProjected,
             out _);
 
-        currentProjected.Should().BeFalse();
-        current.Should().Be(raw);
-        var projected = Enum.GetValues<OperationalMcpArm>()
-            .Where(arm => arm != OperationalMcpArm.CompleteCurrent)
-            .ToDictionary(
-                arm => arm,
-                arm => OperationalMcpResponseProjector.Apply(
-                    raw,
-                    arm,
-                    projection,
-                    out _,
-                    out _));
+        currentProjected.Should().BeTrue();
+        var projected = new Dictionary<OperationalMcpArm, string>();
+        foreach (var arm in Enum.GetValues<OperationalMcpArm>())
+        {
+            var value = OperationalMcpResponseProjector.Apply(
+                raw,
+                arm,
+                projection,
+                out var didProject,
+                out var schema);
+            didProject.Should().BeTrue();
+            schema.Should().Be("dotnet-diagnostics/allocation-reproducibility/v1");
+            projected.Add(arm, value);
+        }
         using var noFields = JsonDocument.Parse(
             projected[OperationalMcpArm.NoStatisticalFields]);
         using var categorical = JsonDocument.Parse(
@@ -353,8 +356,11 @@ public sealed class OperationalMcpProtocolTests
         using var spearman = JsonDocument.Parse(
             projected[OperationalMcpArm.CategoricalSpearman]);
         var noFieldsData = noFields.RootElement.GetProperty("data");
+        noFields.RootElement.GetProperty("summary").GetString()
+            .Should().Be(projection.GuardPackage.Summary);
         noFieldsData.TryGetProperty("availability", out _).Should().BeFalse();
         noFieldsData.TryGetProperty("compatibility", out _).Should().BeFalse();
+        noFieldsData.TryGetProperty("method", out _).Should().BeFalse();
         noFieldsData.GetProperty("captures")[0].GetProperty("attributionState")
             .GetString().Should().Be("partial");
         var categoricalData = categorical.RootElement.GetProperty("data");
@@ -377,42 +383,87 @@ public sealed class OperationalMcpProtocolTests
         spearmanData.GetProperty("allocatedTypeStability")
             .TryGetProperty("medianSharedKeySpearman", out _).Should().BeTrue();
 
-        AssertOnlyPointersDiffer(
-            projected[OperationalMcpArm.NoStatisticalFields],
-            current,
-            "/summary", "/data/method", "/data/availability",
-            "/data/requestedCaptureCount", "/data/availableCaptureCount",
-            "/data/independenceUnit", "/data/compatibility",
-            "/data/estimatedBytes", "/data/allocationTicks",
-            "/data/allocatedTypeStability", "/data/allocationStackStability",
-            "/data/assumptions", "/data/limitations");
-        AssertOnlyPointersDiffer(
-            projected[OperationalMcpArm.CategoricalQuality],
-            current,
-            "/summary", "/data/method", "/data/estimatedBytes",
-            "/data/allocationTicks", "/data/allocatedTypeStability",
-            "/data/allocationStackStability", "/data/assumptions",
-            "/data/limitations");
-        AssertOnlyPointersDiffer(
-            projected[OperationalMcpArm.CategoricalMedianMad],
-            current,
-            "/summary", "/data/method", "/data/allocatedTypeStability",
-            "/data/allocationStackStability", "/data/assumptions",
-            "/data/limitations");
-        AssertOnlyPointersDiffer(
-            projected[OperationalMcpArm.CategoricalJaccard],
-            current,
-            "/summary", "/data/method", "/data/estimatedBytes",
-            "/data/allocationTicks", "/data/allocatedTypeStability",
-            "/data/allocationStackStability", "/data/assumptions",
-            "/data/limitations");
-        AssertOnlyPointersDiffer(
-            projected[OperationalMcpArm.CategoricalSpearman],
-            current,
-            "/summary", "/data/method", "/data/estimatedBytes",
-            "/data/allocationTicks", "/data/allocatedTypeStability",
-            "/data/allocationStackStability", "/data/assumptions",
-            "/data/limitations");
+        var expectedPresence = new Dictionary<OperationalMcpArm, string[]>
+        {
+            [OperationalMcpArm.NoStatisticalFields] = [],
+            [OperationalMcpArm.CategoricalQuality] =
+            [
+                "/data/availability",
+                "/data/requestedCaptureCount",
+                "/data/availableCaptureCount",
+                "/data/independenceUnit",
+                "/data/compatibility",
+            ],
+            [OperationalMcpArm.CategoricalMedianMad] =
+            [
+                "/data/availability",
+                "/data/requestedCaptureCount",
+                "/data/availableCaptureCount",
+                "/data/independenceUnit",
+                "/data/compatibility",
+                "/data/estimatedBytes",
+                "/data/allocationTicks",
+            ],
+            [OperationalMcpArm.CategoricalJaccard] =
+            [
+                "/data/availability",
+                "/data/requestedCaptureCount",
+                "/data/availableCaptureCount",
+                "/data/independenceUnit",
+                "/data/compatibility",
+                "/data/allocatedTypeStability",
+                "/data/allocationStackStability",
+            ],
+            [OperationalMcpArm.CategoricalSpearman] =
+            [
+                "/data/availability",
+                "/data/requestedCaptureCount",
+                "/data/availableCaptureCount",
+                "/data/independenceUnit",
+                "/data/compatibility",
+                "/data/allocatedTypeStability",
+                "/data/allocationStackStability",
+            ],
+            [OperationalMcpArm.CompleteCurrent] =
+                projection.CandidateResponsePointers.ToArray(),
+        };
+        foreach (var (arm, json) in projected)
+        {
+            var root = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            foreach (var pointer in projection.CandidateResponsePointers)
+            {
+                (ResolvePointer(root, pointer) is not null).Should().Be(
+                    expectedPresence[arm].Contains(pointer, StringComparer.Ordinal),
+                    $"{pointer} has a frozen presence state for {arm}");
+            }
+        }
+
+        var invariantBytes = projected.ToDictionary(
+            value => value.Key,
+            value => RemovePointersAndSerialize(
+                value.Value,
+                projection.CandidateResponsePointers));
+        invariantBytes.Values.Distinct(StringComparer.Ordinal)
+            .Should().ContainSingle(
+                "every response byte outside declared candidate pointers must be identical");
+        projected.Values.Should().OnlyContain(value =>
+            value.Contains(projection.GuardPackage.Summary, StringComparison.Ordinal));
+        projection.GuardPackage.Assumptions.Should().Contain(
+            "These observations do not establish exactness, workload equivalence, zero activity from missing evidence, dominance, severity, causality, regression, health, or optimization priority.");
+        projection.GuardPackage.Limitations.Should().Contain(
+            "These observations do not establish exactness, workload equivalence, zero activity from missing evidence, dominance, severity, causality, regression, health, or optimization priority.");
+
+        OperationalMcpResponseProjector.MutationInventoryFingerprint(projection)
+            .Should().Be(projection.ExpectedMutationFingerprint);
+        var methodMutation = projection.ResponseMutations.Single(value =>
+            value.JsonPointer == "/data/method");
+        methodMutation.CurrentValue.HasValue.Should().BeFalse();
+        methodMutation.Arms.Should().BeEquivalentTo(Enum.GetValues<OperationalMcpArm>());
+        Enum.GetValues<OperationalMcpArm>()
+            .Select(arm =>
+                OperationalMcpResponseProjector.ProjectionFingerprint(projection, arm))
+            .Should().OnlyHaveUniqueItems(
+                "arm membership and mutation applicability must be independently fingerprinted");
     }
 
     [Fact]
@@ -434,27 +485,80 @@ public sealed class OperationalMcpProtocolTests
     }
 
     [Fact]
-    public void Projection_PreservesNonAvailableResultsByteForByte()
+    public void Projection_AppliesSharedGuardAndFieldIsolationToNonAvailableResults()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var projection = protocol.Projections[0];
         const string insufficient =
             """
-            {"summary":"Allocation reproducibility requires at least 3 identity-compatible available captures; 1 were available.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","availability":"insufficientCaptureCount","availableCaptureCount":1}}
+            {"summary":"Allocation reproducibility requires at least 3 identity-compatible available captures; 1 were available.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","method":"bounded-top-k-jaccard-shared-key-spearman-v1","availability":"insufficientCaptureCount","requestedCaptureCount":3,"availableCaptureCount":1,"captures":[{"handle":"h-1","handleStatus":"available","attributionState":"partial"}]},"handle":"h-1","cancelled":false}
             """;
 
-        OperationalMcpResponseProjector.Apply(
+        var projected = Enum.GetValues<OperationalMcpArm>().ToDictionary(
+            arm => arm,
+            arm => OperationalMcpResponseProjector.Apply(
                 insufficient,
-                OperationalMcpArm.NoStatisticalFields,
+                arm,
                 projection,
-                out var projected,
-                out _)
-            .Should().Be(insufficient);
-        projected.Should().BeFalse();
+                out _,
+                out _));
+        projected.Values.Should().OnlyContain(value =>
+            value.Contains(projection.GuardPackage.Summary, StringComparison.Ordinal));
+        projected.Values.Select(value =>
+                RemovePointersAndSerialize(
+                    value,
+                    projection.CandidateResponsePointers))
+            .Distinct(StringComparer.Ordinal)
+            .Should().ContainSingle();
+        using var noFields = JsonDocument.Parse(
+            projected[OperationalMcpArm.NoStatisticalFields]);
+        noFields.RootElement.GetProperty("data")
+            .TryGetProperty("availability", out _).Should().BeFalse();
+        noFields.RootElement.GetProperty("data").GetProperty("captures")[0]
+            .GetProperty("attributionState").GetString().Should().Be("partial");
+        noFields.RootElement.GetProperty("data").GetProperty("assumptions")
+            .GetArrayLength().Should().Be(projection.GuardPackage.Assumptions.Count);
+        noFields.RootElement.GetProperty("data").GetProperty("limitations")
+            .GetArrayLength().Should().Be(projection.GuardPackage.Limitations.Count);
     }
 
     [Fact]
-    public void ToolProjection_NeutralizesOnlyCandidateDerivedDescriptions()
+    public void Projection_AppliesSharedGuardAndFieldIsolationToIncompatibleResults()
+    {
+        var protocol = OperationalMcpProtocolLoader.LoadDefault();
+        var projection = protocol.Projections[0];
+        const string incompatible =
+            """
+            {"summary":"Allocation captures were not identity-compatible.","hints":[],"error":null,"data":{"schema":"dotnet-diagnostics/allocation-reproducibility/v1","method":"bounded-top-k-jaccard-shared-key-spearman-v1","availability":"incompatible","requestedCaptureCount":3,"availableCaptureCount":2,"independenceUnit":"capture","compatibility":{"status":"incompatible","reasons":["requested duration differs"]},"captures":[{"handle":"h-1","handleStatus":"available","attributionState":"partial"},{"handle":"h-2","handleStatus":"unavailable","attributionState":"unavailable"}]},"handle":"h-2","cancelled":false}
+            """;
+
+        var projected = Enum.GetValues<OperationalMcpArm>().ToDictionary(
+            arm => arm,
+            arm => OperationalMcpResponseProjector.Apply(
+                incompatible,
+                arm,
+                projection,
+                out _,
+                out _));
+
+        projected.Values.Select(value =>
+                RemovePointersAndSerialize(
+                    value,
+                    projection.CandidateResponsePointers))
+            .Distinct(StringComparer.Ordinal)
+            .Should().ContainSingle();
+        using var noFields = JsonDocument.Parse(
+            projected[OperationalMcpArm.NoStatisticalFields]);
+        var data = noFields.RootElement.GetProperty("data");
+        data.TryGetProperty("compatibility", out _).Should().BeFalse();
+        data.GetProperty("captures")[0].GetProperty("attributionState")
+            .GetString().Should().Be("partial");
+        data.GetProperty("captures")[1].GetProperty("handleStatus")
+            .GetString().Should().Be("unavailable");
+    }
+
+    [Fact]
+    public void ToolProjection_AppliesOneByteIdenticalNeutralGuardToEveryArm()
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var projection = protocol.Projections.Single();
@@ -470,32 +574,90 @@ public sealed class OperationalMcpProtocolTests
                     """)!.AsObject()),
         };
 
-        var control = OperationalMcpResponseProjector.ApplyToolDefinitions(
-            hardened,
-            OperationalMcpArm.NoStatisticalFields,
-            projection);
-        var unchanged = OperationalMcpResponseProjector.ApplyToolDefinitions(
-            hardened,
-            OperationalMcpArm.CompleteCurrent,
-            projection);
+        var guarded = Enum.GetValues<OperationalMcpArm>().ToDictionary(
+            arm => arm,
+            arm => OperationalMcpResponseProjector.ApplyToolDefinitions(
+                hardened,
+                arm,
+                projection));
+        var serialized = guarded.ToDictionary(
+            value => value.Key,
+            value => JsonSerializer.Serialize(value.Value, OperationalMcpJson.Options));
 
-        OperationalMcpProtocolLoader.Fingerprint(unchanged)
-            .Should().Be(OperationalMcpProtocolLoader.Fingerprint(hardened));
-        control[0].Should().BeEquivalentTo(hardened[0]);
-        control[1].Description.Should().Contain("omitting pooled measurement-quality fields");
-        control[1].Parameters["properties"]!["view"]!["description"]!.GetValue<string>()
-            .Should().Contain("omits pooled allocation measurement-quality fields");
-        control[1].Parameters["properties"]!["topN"]!["description"]!.GetValue<string>()
-            .Should().Contain("bounded raw capture evidence");
-        control[1].Parameters["properties"]!["comparisonHandles"]!["description"]!.GetValue<string>()
-            .Should().Contain("omitting pooled measurement-quality fields");
-        AssertOnlyPointersDiffer(
-            JsonSerializer.Serialize(control, OperationalMcpJson.Options),
-            JsonSerializer.Serialize(unchanged, OperationalMcpJson.Options),
-            "/1/description",
-            "/1/parameters/properties/view/description",
-            "/1/parameters/properties/topN/description",
-            "/1/parameters/properties/comparisonHandles/description");
+        serialized.Values.Distinct(StringComparer.Ordinal)
+            .Should().ContainSingle(
+                "selected tool definitions must be byte-identical across arms");
+        guarded.Values.Should().OnlyContain(value =>
+            value[0].Description == hardened[0].Description);
+        serialized.Values.Should().OnlyContain(value =>
+            value.Contains(
+                "These observations do not establish exactness, workload equivalence, zero activity from missing evidence, dominance, severity, causality, regression, health, or optimization priority.",
+                StringComparison.Ordinal));
+        OperationalMcpResponseProjector.GuardPackageFingerprint(
+                projection.GuardPackage)
+            .Should().Be(projection.GuardPackage.ExpectedFingerprint);
+
+        var projectedGuardText = string.Join(
+            "\n",
+            new[] { projection.GuardPackage.Summary }
+                .Concat(projection.GuardPackage.Assumptions)
+                .Concat(projection.GuardPackage.Limitations)
+                .Concat(projection.GuardPackage.ToolDefinitionMutations.Select(value =>
+                    value.Value.GetString() ?? string.Empty)));
+        foreach (var candidateTerm in new[]
+                 {
+                     "compatibility",
+                     "membership",
+                     "rank",
+                     "median",
+                     "MAD",
+                     "Jaccard",
+                     "Spearman",
+                     "stability",
+                     "measurement-quality",
+                 })
+        {
+            projectedGuardText.Should().NotContainEquivalentOf(candidateTerm);
+        }
+
+        var mutationPointers = projection.ResponseMutations
+            .Select(value => value.JsonPointer)
+            .Where(value => value != "/data/method")
+            .Distinct(StringComparer.Ordinal);
+        mutationPointers.Should().BeEquivalentTo(projection.CandidateResponsePointers);
+
+        var methodMutation = projection.ResponseMutations.Single(value =>
+            value.JsonPointer == "/data/method");
+        var withoutOneArm = methodMutation with
+        {
+            Arms = methodMutation.Arms
+                .Where(value => value != OperationalMcpArm.CompleteCurrent)
+                .ToArray(),
+        };
+        var changedMembership = projection with
+        {
+            ResponseMutations = projection.ResponseMutations
+                .Select(value => value == methodMutation ? withoutOneArm : value)
+                .ToArray(),
+        };
+        OperationalMcpResponseProjector.MutationInventoryFingerprint(changedMembership)
+            .Should().NotBe(projection.ExpectedMutationFingerprint);
+
+        using var methodValue = JsonDocument.Parse(
+            "\"bounded-top-k-jaccard-shared-key-spearman-v1\"");
+        var withCurrentValue = methodMutation with
+        {
+            CurrentValue = methodValue.RootElement.Clone(),
+        };
+        var changedCurrentValuePresence = projection with
+        {
+            ResponseMutations = projection.ResponseMutations
+                .Select(value => value == methodMutation ? withCurrentValue : value)
+                .ToArray(),
+        };
+        OperationalMcpResponseProjector.MutationInventoryFingerprint(
+                changedCurrentValuePresence)
+            .Should().NotBe(projection.ExpectedMutationFingerprint);
     }
 
     [Fact]
@@ -953,25 +1115,17 @@ public sealed class OperationalMcpProtocolTests
             executed,
             "test");
 
-    private static void AssertOnlyPointersDiffer(
-        string leftJson,
-        string rightJson,
-        params string[] allowedPointers)
+    private static string RemovePointersAndSerialize(
+        string json,
+        IReadOnlyList<string> pointers)
     {
-        var left = System.Text.Json.Nodes.JsonNode.Parse(leftJson)!;
-        var right = System.Text.Json.Nodes.JsonNode.Parse(rightJson)!;
-        foreach (var pointer in allowedPointers)
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        foreach (var pointer in pointers)
         {
-            var leftValue = ResolvePointer(left, pointer);
-            var rightValue = ResolvePointer(right, pointer);
-            System.Text.Json.Nodes.JsonNode.DeepEquals(leftValue, rightValue)
-                .Should().BeFalse($"'{pointer}' must be a real arm difference");
-            RemovePointer(left, pointer);
-            RemovePointer(right, pointer);
+            RemovePointer(root, pointer);
         }
 
-        System.Text.Json.Nodes.JsonNode.DeepEquals(left, right)
-            .Should().BeTrue("all non-candidate evidence must remain invariant");
+        return root.ToJsonString();
     }
 
     private static System.Text.Json.Nodes.JsonNode? ResolvePointer(
@@ -1030,7 +1184,7 @@ public sealed class OperationalMcpLiveTests
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
         var testCase = protocol.Cases.Single(value =>
-            value.Id == "v5-dev-allocation-positive");
+            value.Id == "v6-dev-allocation-positive");
         var outputPath = Path.Combine(
             Path.GetTempPath(),
             "dotnet-diagnostics-predeclared-failure",
@@ -1143,78 +1297,91 @@ public sealed class OperationalMcpLiveTests
         OperationalMcpArm arm)
     {
         var protocol = OperationalMcpProtocolLoader.LoadDefault();
-        var testCase = protocol.Cases.Single(value => value.Id == "v5-dev-allocation-positive");
+        var testCase = protocol.Cases.Single(value => value.Id == "v6-dev-allocation-positive");
         var manifest = OperationalMcpProtocolLoader.ToScenarioManifest(testCase);
-        await using var target = await AgentScenarioTarget.StartAsync(
-            manifest,
-            CancellationToken.None);
-        await using var gateway = await OperationalMcpToolGateway.StartAsync(
-            target.ProcessId,
-            protocol.Budgets.ToAgentBudget(),
-            testCase.Family,
-            testCase.RequiredCaptures,
-            arm,
-            protocol,
-            Path.Combine(Path.GetTempPath(), "dotnet-diagnostics-operational-mcp", Guid.NewGuid().ToString("n")),
-            CancellationToken.None);
-        var predeclared = await gateway.CollectPredeclaredEvidenceAsync(
-            testCase,
-            CancellationToken.None);
+        var artifactRoot = Path.Combine(
+            Path.GetTempPath(),
+            "dotnet-diagnostics-operational-mcp",
+            Guid.NewGuid().ToString("n"));
+        try
+        {
+            await using var target = await AgentScenarioTarget.StartAsync(
+                manifest,
+                CancellationToken.None);
+            await using var gateway = await OperationalMcpToolGateway.StartAsync(
+                target.ProcessId,
+                protocol.Budgets.ToAgentBudget(),
+                testCase.Family,
+                testCase.RequiredCaptures,
+                arm,
+                protocol,
+                artifactRoot,
+                CancellationToken.None);
+            var predeclared = await gateway.CollectPredeclaredEvidenceAsync(
+                testCase,
+                CancellationToken.None);
 
-        predeclared.Should().HaveCount(testCase.RequiredCaptures + 1);
-        predeclared.Should().OnlyContain(value => value.Result.Succeeded);
-        using var queryDocument = JsonDocument.Parse(predeclared[^1].Result.ContentJson);
-        queryDocument.RootElement.GetProperty("data").GetProperty("schema").GetString()
-            .Should().Be("dotnet-diagnostics/allocation-reproducibility/v1");
-        gateway.Exchanges.Should().HaveCount(testCase.RequiredCaptures + 1);
-        gateway.Exchanges.Should().OnlyContain(value =>
-            value.Origin == OperationalMcpExchangeOrigin.Predeclared);
-        gateway.Exchanges.Should().OnlyContain(value =>
-            value.RawResponseSha256.Length == 64
-            && value.ModelVisibleResponseSha256.Length == 64);
-        gateway.RequiredEvidenceSequenceCompleted.Should().BeTrue();
-        gateway.CatalogFingerprint.Should().Be(protocol.ExpectedCatalogFingerprint);
-        gateway.ToolDefinitionFingerprint.Should().Be(
-            protocol.Inventory.Single(value =>
-                value.Family == testCase.Family)
-                .ExpectedToolDefinitionFingerprints![arm]);
-        gateway.ResponseProjectionFingerprint.Should().Be(
-            protocol.Projections.Single().ExpectedFingerprints[arm]);
-        JsonSerializer.Serialize(gateway.Tools).Should().NotContain(testCase.Id);
-        JsonSerializer.Serialize(gateway.Tools).Should().NotContain("noStatisticalFields");
-        JsonSerializer.Serialize(gateway.Tools).Should().NotContain("currentIndicator");
-        var (extraCapture, extraApproval) = await gateway.ExecuteAsync(
-            new AgentToolCall(
-                "collect-extra",
-                "collect_sample",
-                """{"target":"target-1","kind":"allocation","durationSeconds":2,"topN":10}"""),
-            CancellationToken.None);
-        extraCapture.Succeeded.Should().BeFalse();
-        extraCapture.ErrorCode.Should().Be("invalid_arguments");
-        gateway.Exchanges.Should().ContainSingle(value =>
-            value.Origin == OperationalMcpExchangeOrigin.FollowUp
-            && !value.Succeeded
-            && value.ErrorCode == "invalid_arguments");
-        OperationalMcpAssessor.CountUnauthorizedAttempts([extraApproval]).Should().Be(0);
-        var (unknownQuery, unknownApproval) = await gateway.ExecuteAsync(
-            new AgentToolCall(
-                "query-unknown",
-                "query_snapshot",
-                """{"handle":"not-from-this-arm","view":"allocation-reproducibility","comparisonHandles":["also-unknown","still-unknown"]}"""),
-            CancellationToken.None);
-        unknownQuery.Succeeded.Should().BeFalse();
-        unknownQuery.ErrorCode.Should().Be("invalid_arguments");
-        OperationalMcpAssessor.CountUnauthorizedAttempts([unknownApproval]).Should().Be(0);
-        var (wrongTarget, wrongTargetApproval) = await gateway.ExecuteAsync(
-            new AgentToolCall(
-                "collect-wrong-target",
-                "collect_sample",
-                """{"target":"target-2","kind":"allocation","durationSeconds":2,"topN":10}"""),
-            CancellationToken.None);
-        wrongTarget.Succeeded.Should().BeFalse();
-        wrongTarget.ErrorCode.Should().Be("target_not_authorized");
-        OperationalMcpAssessor.CountUnauthorizedAttempts([wrongTargetApproval]).Should().Be(1);
-
+            predeclared.Should().HaveCount(testCase.RequiredCaptures + 1);
+            predeclared.Should().OnlyContain(value => value.Result.Succeeded);
+            using var queryDocument = JsonDocument.Parse(predeclared[^1].Result.ContentJson);
+            queryDocument.RootElement.GetProperty("data").GetProperty("schema").GetString()
+                .Should().Be("dotnet-diagnostics/allocation-reproducibility/v1");
+            gateway.Exchanges.Should().HaveCount(testCase.RequiredCaptures + 1);
+            gateway.Exchanges.Should().OnlyContain(value =>
+                value.Origin == OperationalMcpExchangeOrigin.Predeclared);
+            gateway.Exchanges.Should().OnlyContain(value =>
+                value.RawResponseSha256.Length == 64
+                && value.ModelVisibleResponseSha256.Length == 64);
+            gateway.RequiredEvidenceSequenceCompleted.Should().BeTrue();
+            gateway.CatalogFingerprint.Should().Be(protocol.ExpectedCatalogFingerprint);
+            gateway.ToolDefinitionFingerprint.Should().Be(
+                protocol.Inventory.Single(value =>
+                    value.Family == testCase.Family)
+                    .ExpectedToolDefinitionFingerprints![arm]);
+            gateway.ResponseProjectionFingerprint.Should().Be(
+                protocol.Projections.Single().ExpectedFingerprints[arm]);
+            JsonSerializer.Serialize(gateway.Tools).Should().NotContain(testCase.Id);
+            JsonSerializer.Serialize(gateway.Tools).Should().NotContain("noStatisticalFields");
+            JsonSerializer.Serialize(gateway.Tools).Should().NotContain("currentIndicator");
+            var (extraCapture, extraApproval) = await gateway.ExecuteAsync(
+                new AgentToolCall(
+                    "collect-extra",
+                    "collect_sample",
+                    """{"target":"target-1","kind":"allocation","durationSeconds":2,"topN":10}"""),
+                CancellationToken.None);
+            extraCapture.Succeeded.Should().BeFalse();
+            extraCapture.ErrorCode.Should().Be("invalid_arguments");
+            gateway.Exchanges.Should().ContainSingle(value =>
+                value.Origin == OperationalMcpExchangeOrigin.FollowUp
+                && !value.Succeeded
+                && value.ErrorCode == "invalid_arguments");
+            OperationalMcpAssessor.CountUnauthorizedAttempts([extraApproval]).Should().Be(0);
+            var (unknownQuery, unknownApproval) = await gateway.ExecuteAsync(
+                new AgentToolCall(
+                    "query-unknown",
+                    "query_snapshot",
+                    """{"handle":"not-from-this-arm","view":"allocation-reproducibility","comparisonHandles":["also-unknown","still-unknown"]}"""),
+                CancellationToken.None);
+            unknownQuery.Succeeded.Should().BeFalse();
+            unknownQuery.ErrorCode.Should().Be("invalid_arguments");
+            OperationalMcpAssessor.CountUnauthorizedAttempts([unknownApproval]).Should().Be(0);
+            var (wrongTarget, wrongTargetApproval) = await gateway.ExecuteAsync(
+                new AgentToolCall(
+                    "collect-wrong-target",
+                    "collect_sample",
+                    """{"target":"target-2","kind":"allocation","durationSeconds":2,"topN":10}"""),
+                CancellationToken.None);
+            wrongTarget.Succeeded.Should().BeFalse();
+            wrongTarget.ErrorCode.Should().Be("target_not_authorized");
+            OperationalMcpAssessor.CountUnauthorizedAttempts([wrongTargetApproval]).Should().Be(1);
+        }
+        finally
+        {
+            if (Directory.Exists(artifactRoot))
+            {
+                Directory.Delete(artifactRoot, recursive: true);
+            }
+        }
     }
 
     private sealed class PreflightThenCancellingTransport(

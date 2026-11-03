@@ -24,20 +24,15 @@ internal static class OperationalMcpResponseProjector
             return raw;
         }
 
-        if (!string.Equals(
-                data["availability"]?.GetValue<string>(),
-                "available",
-                StringComparison.Ordinal))
-        {
-            return raw;
-        }
-
+        var available = string.Equals(
+            data["availability"]?.GetValue<string>(),
+            "available",
+            StringComparison.Ordinal);
+        ApplyGuardPackage(root, projection.GuardPackage, available);
         ApplyMutations(root, arm, projection.ResponseMutations);
-        didProject = arm != OperationalMcpArm.CompleteCurrent;
+        didProject = true;
         projectedSchema = schema;
-        return arm == OperationalMcpArm.CompleteCurrent
-            ? raw
-            : root.ToJsonString();
+        return root.ToJsonString();
     }
 
     public static IReadOnlyList<AgentToolDefinition> ApplyToolDefinitions(
@@ -49,37 +44,168 @@ internal static class OperationalMcpResponseProjector
             hardenedDefinitions,
             OperationalMcpJson.Options)?.AsArray()
             ?? throw new JsonException("The model-visible tool definitions were invalid.");
-        ApplyMutations(root, arm, projection.ToolDefinitionMutations);
+        ApplyGuardMutations(root, projection.GuardPackage.ToolDefinitionMutations);
         return root.Deserialize<IReadOnlyList<AgentToolDefinition>>(OperationalMcpJson.Options)
             ?? throw new JsonException("The projected model-visible tool definitions were empty.");
     }
+
+    public static string GuardPackageFingerprint(OperationalMcpGuardPackage guardPackage)
+        => OperationalMcpProtocolLoader.Fingerprint(new
+        {
+            guardPackage.CurrentSummary,
+            guardPackage.CurrentAssumptions,
+            guardPackage.CurrentLimitations,
+            guardPackage.Summary,
+            guardPackage.Assumptions,
+            guardPackage.Limitations,
+            Tools = guardPackage.ToolDefinitionMutations.Select(value => new
+            {
+                value.JsonPointer,
+                value.ExpectedKind,
+                value.CurrentValue,
+                value.Value,
+            }),
+        });
+
+    public static string MutationInventoryFingerprint(OperationalMcpProjection projection)
+        => OperationalMcpProtocolLoader.Fingerprint(
+            projection.ResponseMutations.Select(value => new
+            {
+                value.JsonPointer,
+                value.Operation,
+                value.ExpectedKind,
+                HasCurrentValue = value.CurrentValue.HasValue,
+                value.CurrentValue,
+                value.Arms,
+                value.Values,
+            }));
 
     public static string ProjectionFingerprint(
         OperationalMcpProjection projection,
         OperationalMcpArm arm)
         => OperationalMcpProtocolLoader.Fingerprint(new
         {
+            Arm = arm,
             projection.Family,
             projection.Schema,
             Version = projection.Versions[arm],
             Source = arm == OperationalMcpArm.CompleteCurrent
                 ? projection.CurrentSourceCommit
                 : projection.Sources[arm],
+            GuardPackage = GuardPackageFingerprint(projection.GuardPackage),
+            MutationInventory = MutationInventoryFingerprint(projection),
+            projection.CandidateResponsePointers,
             Response = projection.ResponseMutations.Select(value => new
             {
                 value.JsonPointer,
                 value.Operation,
                 value.ExpectedKind,
-                Value = ProjectedValue(value, arm),
-            }),
-            Tools = projection.ToolDefinitionMutations.Select(value => new
-            {
-                value.JsonPointer,
-                value.Operation,
-                value.ExpectedKind,
+                Applies = value.Arms.Contains(arm),
+                HasCurrentValue = value.CurrentValue.HasValue,
                 Value = ProjectedValue(value, arm),
             }),
         });
+
+    private static void ApplyGuardPackage(
+        JsonObject root,
+        OperationalMcpGuardPackage guardPackage,
+        bool requireFrozenCurrentValues)
+    {
+        SetGuardValue(
+            root,
+            "/summary",
+            requireFrozenCurrentValues
+                ? JsonValue.Create(ExpandText(root, guardPackage.CurrentSummary))
+                : null,
+            JsonValue.Create(ExpandText(root, guardPackage.Summary)),
+            "string");
+        SetGuardValue(
+            root,
+            "/data/assumptions",
+            requireFrozenCurrentValues
+                ? JsonSerializer.SerializeToNode(
+                    guardPackage.CurrentAssumptions,
+                    OperationalMcpJson.Options)
+                : null,
+            JsonSerializer.SerializeToNode(
+                guardPackage.Assumptions,
+                OperationalMcpJson.Options),
+            "array");
+        SetGuardValue(
+            root,
+            "/data/limitations",
+            requireFrozenCurrentValues
+                ? JsonSerializer.SerializeToNode(
+                    guardPackage.CurrentLimitations,
+                    OperationalMcpJson.Options)
+                : null,
+            JsonSerializer.SerializeToNode(
+                guardPackage.Limitations,
+                OperationalMcpJson.Options),
+            "array");
+    }
+
+    private static void ApplyGuardMutations(
+        JsonNode root,
+        IReadOnlyList<OperationalGuardMutation> mutations)
+    {
+        foreach (var mutation in mutations)
+        {
+            ReplaceVerified(
+                root,
+                mutation.JsonPointer,
+                JsonNode.Parse(mutation.CurrentValue.GetRawText()),
+                JsonNode.Parse(mutation.Value.GetRawText()),
+                mutation.ExpectedKind);
+        }
+    }
+
+    private static void ReplaceVerified(
+        JsonNode root,
+        string pointer,
+        JsonNode? expected,
+        JsonNode? value,
+        string expectedKind)
+    {
+        var actual = Resolve(root, pointer);
+        if (actual is null
+            || !JsonNode.DeepEquals(actual, expected)
+            || !MatchesKind(actual, expectedKind))
+        {
+            throw new InvalidDataException(
+                $"The current guard value at '{pointer}' changed: "
+                + $"expected={expected?.ToJsonString() ?? "missing"}, "
+                + $"actual={actual?.ToJsonString() ?? "missing"}.");
+        }
+
+        Replace(root, pointer, value);
+    }
+
+    private static void SetGuardValue(
+        JsonNode root,
+        string pointer,
+        JsonNode? expected,
+        JsonNode? value,
+        string expectedKind)
+    {
+        var actual = Resolve(root, pointer);
+        if (actual is null)
+        {
+            Add(root, pointer, value);
+            return;
+        }
+
+        if (!MatchesKind(actual, expectedKind)
+            || (expected is not null && !JsonNode.DeepEquals(actual, expected)))
+        {
+            throw new InvalidDataException(
+                $"The current guard value at '{pointer}' changed: "
+                + $"expected={expected?.ToJsonString() ?? expectedKind}, "
+                + $"actual={actual.ToJsonString()}.");
+        }
+
+        Replace(root, pointer, value);
+    }
 
     private static void ApplyMutations(
         JsonNode root,
@@ -92,8 +218,12 @@ internal static class OperationalMcpResponseProjector
             var expected = mutation.CurrentValue is { } currentValue
                 ? Expand(root, currentValue)
                 : null;
-            if (actual is null
-                || (expected is not null && !JsonNode.DeepEquals(actual, expected))
+            if (actual is null)
+            {
+                continue;
+            }
+
+            if ((expected is not null && !JsonNode.DeepEquals(actual, expected))
                 || !MatchesKind(actual, mutation.ExpectedKind))
             {
                 throw new InvalidDataException(
@@ -174,23 +304,25 @@ internal static class OperationalMcpResponseProjector
         if (node is JsonValue jsonValue
             && jsonValue.TryGetValue<string>(out var text))
         {
-            return JsonValue.Create(
-                text.Replace(
-                        "{availableCaptureCount}",
-                        Resolve(root, "/data/availableCaptureCount")?.GetValue<int>()
-                            .ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        ?? "{availableCaptureCount}",
-                        StringComparison.Ordinal)
-                    .Replace(
-                        "{topK}",
-                        Resolve(root, "/data/topK")?.GetValue<int>()
-                            .ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        ?? "{topK}",
-                        StringComparison.Ordinal));
+            return JsonValue.Create(ExpandText(root, text));
         }
 
         return node;
     }
+
+    private static string ExpandText(JsonNode root, string text)
+        => text.Replace(
+                "{availableCaptureCount}",
+                Resolve(root, "/data/availableCaptureCount")?.GetValue<int>()
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ?? "{availableCaptureCount}",
+                StringComparison.Ordinal)
+            .Replace(
+                "{topK}",
+                Resolve(root, "/data/topK")?.GetValue<int>()
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ?? "{topK}",
+                StringComparison.Ordinal);
 
     private static JsonNode? Resolve(JsonNode root, string pointer)
     {
@@ -273,6 +405,26 @@ internal static class OperationalMcpResponseProjector
                 throw new InvalidDataException(
                     $"The wording replacement path '{pointer}' could not be removed.");
         }
+    }
+
+    private static void Add(JsonNode root, string pointer, JsonNode? value)
+    {
+        var segments = Segments(pointer).ToArray();
+        if (segments.Length == 0)
+        {
+            throw new InvalidDataException("A guard value cannot target the document root.");
+        }
+
+        var parentPointer = "/" + string.Join("/", segments[..^1].Select(Escape));
+        var parent = segments.Length == 1 ? root : Resolve(root, parentPointer);
+        var last = segments[^1];
+        if (parent is not JsonObject jsonObject || jsonObject.ContainsKey(last))
+        {
+            throw new InvalidDataException(
+                $"The guard path '{pointer}' could not be added.");
+        }
+
+        jsonObject.Add(last, value?.DeepClone());
     }
 
     private static IEnumerable<string> Segments(string pointer)
