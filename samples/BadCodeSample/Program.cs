@@ -305,15 +305,24 @@ app.MapGet("/loh-alloc", (int? count) =>
     return Results.Ok(new { iterations = n, allocatedBytes = allocated });
 });
 
-app.MapGet("/allocation-shape", (string? shape, int? milliseconds) =>
+app.MapGet("/allocation-shape", (string? shape, int? milliseconds, int? retainedBytes) =>
 {
     var selected = shape?.Trim().ToLowerInvariant() ?? "primary";
     var duration = TimeSpan.FromMilliseconds(Math.Clamp(milliseconds ?? 1500, 25, 10_000));
+    _ = AllocationShapeWorkload.EnsureRetainedBytes(
+        Math.Clamp(retainedBytes ?? 0, 0, 16 * 1024 * 1024));
     return selected switch
     {
         "primary" => Results.Ok(AllocationShapeWorkload.RunPrimary(duration)),
         "changed" => Results.Ok(AllocationShapeWorkload.RunChanged(duration)),
-        _ => Results.BadRequest(new { error = "shape must be primary or changed" }),
+        "low" => Results.Ok(AllocationShapeWorkload.RunLow(duration)),
+        "increased" => Results.Ok(AllocationShapeWorkload.RunIncreased(duration)),
+        "periodic-a" => Results.Ok(AllocationShapeWorkload.RunPeriodicA(duration)),
+        "periodic-b" => Results.Ok(AllocationShapeWorkload.RunPeriodicB(duration)),
+        _ => Results.BadRequest(new
+        {
+            error = "shape must be primary, changed, low, increased, periodic-a, or periodic-b",
+        }),
     };
 });
 
