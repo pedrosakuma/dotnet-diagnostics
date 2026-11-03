@@ -11,7 +11,9 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 internal static class AllocationDirectionalEnvironmentVariables
 {
     public const string FixturePath =
-        "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_FIXTURE_PATH";
+        "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V2_FIXTURE_PATH";
+    public const string ReportReevaluationFixturePath =
+        "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V2_REEVALUATE_FIXTURE_PATH";
 }
 
 public static class AllocationDirectionalLive
@@ -27,6 +29,7 @@ public static class AllocationDirectionalLive
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ledgerPath);
         var protocol = AllocationDirectionalProtocol.ValidateFrozen();
+        ValidateFrozenRuntimeResolution();
         var artifactRoot = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
             "dotnet-diagnostics-allocation-directional",
@@ -167,6 +170,7 @@ public static class AllocationDirectionalLive
         Task<CallToolResult>? collectTask = null;
         LiveSampleProcess? sample = null;
         AllocationDirectionalObservation? observation = null;
+        var processIdentity = $"not-started-{attemptId}";
         var stage = AllocationDirectionalAttemptStage.ProcessStart;
         var operationId = "process.start-published";
         Exception? cleanupException = null;
@@ -185,6 +189,8 @@ public static class AllocationDirectionalLive
                         StringComparer.Ordinal),
                 },
                 attempt.Token).ConfigureAwait(false);
+            processIdentity =
+                $"pid-{sample.ProcessId}-started-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffffffZ}";
             stage = AllocationDirectionalAttemptStage.ProcessReadiness;
             operationId = "process.http-readiness";
             var baseUrl = await sample.WaitForListeningUrlAsync(
@@ -335,9 +341,23 @@ public static class AllocationDirectionalLive
                     "Collected once through the repository-built MCP server over real stdio.",
                     "The target process was started independently for this observation and terminated after capture.",
                     "The operation denominator came from the workload response, not from allocation ticks.",
+                    "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts.",
                 ])
             {
                 AttemptEvidence = projected.Evidence,
+                CaptureId = $"capture-{attemptId}",
+                ProcessIdentity = $"process-{attemptId}",
+                ComparisonRole = Role(attemptId),
+                QuantityEvidence = QuantityEvidence(
+                    attemptId,
+                    operations,
+                    available: operations > 0 && allocation.TotalBytes > 0),
+                TypeAvailability = allocation.Types.Count > 0
+                    ? "available"
+                    : "unavailable",
+                SiteAvailability = allocation.Sites.Count > 0
+                    ? "available"
+                    : "unavailable",
             };
             goto Complete;
         }
@@ -430,7 +450,7 @@ public static class AllocationDirectionalLive
         }
 
 Complete:
-        return observation
+        return (observation
             ?? Failure(
                 attemptId,
                 workloadIdentity,
@@ -441,7 +461,10 @@ Complete:
                     stage,
                     operationId,
                     AllocationDirectionalFailureCategory.UnexpectedHarnessException),
-                aborted: false);
+                aborted: false)) with
+            {
+                ProcessIdentity = processIdentity,
+            };
     }
 
     private static async Task<WorkloadResult> RunWorkloadAsync(
@@ -501,29 +524,44 @@ Complete:
             ["The failed or aborted observation remains in its frozen pair denominator."])
         {
             AttemptEvidence = evidence,
+            CaptureId = $"capture-{attemptId}",
+            ProcessIdentity = $"process-{attemptId}",
+            ComparisonRole = Role(attemptId),
+            QuantityEvidence = QuantityEvidence(
+                attemptId,
+                denominatorValue: 0,
+                available: false),
+            TypeAvailability = "unavailable",
+            SiteAvailability = "unavailable",
         };
 
     private static void AddPartialAttributionControls(
         List<AllocationDirectionalPair> pairs)
     {
         var increases = pairs.Where(pair =>
-                pair.Scenario == AllocationDirectionalScenario.TrueIncrease)
+                pair.Scenario == AllocationDirectionalScenario.TrueIncrease
+                && pair.Current.Phase == "effect")
             .ToArray();
+        if (increases.Length != AllocationDirectionalBounds.RequiredPairs)
+        {
+            throw new InvalidDataException(
+                "Partial-attribution controls require exactly the three predeclared v2 increase-effect pairs.");
+        }
         for (var index = 0; index < AllocationDirectionalBounds.RequiredPairs; index++)
         {
             var increase = increases[index];
             pairs.Add(new(
-                $"partial-{index + 1:D2}",
+                $"v2-partial-{index + 1:D2}",
                 AllocationDirectionalScenario.PartialAttribution,
                 "allocation-volume",
                 Project(
                     increase.Baseline,
-                    $"partial-{index + 1:D2}-baseline",
-                    "partial-attribution-v1"),
+                    $"v2-partial-{index + 1:D2}-baseline",
+                    "partial-attribution-v2"),
                 Project(
                     increase.Current,
-                    $"partial-{index + 1:D2}-current",
-                    "partial-attribution-v1",
+                    $"v2-partial-{index + 1:D2}-current",
+                    "partial-attribution-v2",
                     attributionState: "partial",
                     removeSites: true)));
         }
@@ -560,7 +598,55 @@ Complete:
                 .. source.Provenance,
                 "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt.",
             ],
+            CaptureId = $"projection-{attemptId}",
+            ProcessIdentity = source.ProcessIdentity,
+            ComparisonRole = Role(attemptId),
+            QuantityEvidence = source.QuantityEvidence is null
+                ? null
+                : source.QuantityEvidence with
+                {
+                    BaselineCurrentSemantics = Role(attemptId),
+                },
+            TypeAvailability = source.Types.Count > 0
+                ? "available"
+                : "unavailable",
+            SiteAvailability = removeSites
+                ? "unavailable-partial-attribution"
+                : source.Sites.Count > 0
+                    ? "available"
+                    : "unavailable",
         };
+
+    private static AllocationDirectionalQuantityEvidence QuantityEvidence(
+        string attemptId,
+        long denominatorValue,
+        bool available)
+        => new(
+            "estimated sampled allocation bytes",
+            "estimated sampled bytes",
+            Role(attemptId),
+            "completed workload operations",
+            "operations",
+            denominatorValue,
+            "estimated sampled bytes divided by completed workload operations",
+            LoadSensitive: false,
+            available ? "available" : "unavailable",
+            available
+                ? null
+                : "A positive operation denominator and positive sampled weight are required.",
+            [
+                "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+                "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+                "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+                "Type and site inventories have independent availability and are never joined.",
+            ]);
+
+    private static string Role(string attemptId)
+        => attemptId.EndsWith("-baseline", StringComparison.Ordinal)
+            ? "baseline"
+            : attemptId.EndsWith("-current", StringComparison.Ordinal)
+                ? "current"
+                : "controlled-projection";
 
     private static async Task<McpClient> StartMcpAsync(
         string artifactRoot,
@@ -597,21 +683,50 @@ Complete:
                 "Could not locate the repository root for the real MCP subprocess.");
         }
 
-        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Release";
-        var framework = new DirectoryInfo(AppContext.BaseDirectory).Name;
         var dll = System.IO.Path.Combine(
             directory.FullName,
             "src",
             "DotnetDiagnostics.Mcp",
             "bin",
-            configuration,
-            framework,
+            "Release",
+            "net10.0",
             "DotnetDiagnostics.Mcp.dll");
         return File.Exists(dll)
             ? dll
             : throw new FileNotFoundException(
                 "The real MCP subprocess must be built before the allocation directional study.",
                 dll);
+    }
+
+    private static void ValidateFrozenRuntimeResolution()
+    {
+        var server = FindServerDll();
+        var sample = SampleLocator.LocateSampleDll("BadCodeSample")
+            ?? throw new FileNotFoundException(
+                "The frozen BadCodeSample Release binary was not found.");
+        var root = Directory.GetParent(
+                System.IO.Path.GetDirectoryName(server)
+                ?? throw new DirectoryNotFoundException())?.Parent?.Parent?.Parent?.Parent?.FullName
+            ?? throw new DirectoryNotFoundException(
+                "Could not resolve the repository root from the frozen MCP binary.");
+        var expectedSample = System.IO.Path.GetFullPath(System.IO.Path.Combine(
+            root,
+            "samples",
+            "BadCodeSample",
+            "bin",
+            "Release",
+            "net10.0",
+            "BadCodeSample.dll"));
+        if (!string.Equals(
+                System.IO.Path.GetFullPath(sample),
+                expectedSample,
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The live allocation study must launch the frozen Release BadCodeSample binary.");
+        }
     }
 
     private static string ResponseJson(CallToolResult result)
@@ -631,7 +746,7 @@ public sealed class AllocationDirectionalLiveTests
     [EnvironmentRequiredFact(
         AllocationDirectionalEnvironmentVariables.FixturePath,
         "The frozen one-time allocation directional fixture capture requires an explicit output path.",
-        Timeout = 4_000_000)]
+        Timeout = 7_200_000)]
     [Trait("Category", "ScenarioEvaluationLive")]
     public async Task FrozenRealMcpCapture_WritesEveryAttemptOnce()
     {
@@ -653,10 +768,10 @@ public sealed class AllocationDirectionalLiveTests
             CancellationToken.None);
         AllocationDirectionalJson.WriteFixture(fixturePath, fixture);
 
-        fixture.Pairs.Should().HaveCount(39);
+        fixture.Pairs.Should().HaveCount(AllocationDirectionalCapturePlan.TotalPairs);
         fixture.Pairs.SelectMany(pair => new[] { pair.Baseline, pair.Current })
             .Count(observation => observation.Origin == AllocationDirectionalOrigin.LiveMcp)
-            .Should().Be(72);
+            .Should().Be(AllocationDirectionalCapturePlan.LiveMcpSides);
         fixture.Pairs.Should().OnlyContain(pair =>
             pair.Baseline.AttemptId != pair.Current.AttemptId);
         var report = AllocationDirectionalHarness.Evaluate(fixture);
@@ -666,6 +781,34 @@ public sealed class AllocationDirectionalLiveTests
             FileAccess.Write,
             FileShare.None);
         using var writer = new StreamWriter(reportStream);
+        writer.Write(AllocationDirectionalJson.SerializeReport(report));
+    }
+}
+
+public sealed class AllocationDirectionalReportTests
+{
+    [EnvironmentRequiredFact(
+        AllocationDirectionalEnvironmentVariables.ReportReevaluationFixturePath,
+        "Report-only reevaluation requires the retained v2 fixture path.")]
+    public void RetainedFixture_ReevaluatesWithoutLiveCapture()
+    {
+        var fixturePath = Environment.GetEnvironmentVariable(
+            AllocationDirectionalEnvironmentVariables.ReportReevaluationFixturePath)
+            ?? throw new InvalidOperationException(
+                "The retained v2 fixture path was not configured.");
+        var reportPath = System.IO.Path.ChangeExtension(
+            fixturePath,
+            ".report.json");
+        File.Exists(reportPath).Should().BeFalse(
+            "the execution-time report must be preserved separately before corrected reevaluation");
+        var fixture = AllocationDirectionalJson.ReadFixture(fixturePath);
+        var report = AllocationDirectionalHarness.Evaluate(fixture);
+        using var stream = new FileStream(
+            reportPath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None);
+        using var writer = new StreamWriter(stream);
         writer.Write(AllocationDirectionalJson.SerializeReport(report));
     }
 }

@@ -5,7 +5,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 public static class AllocationDirectionalBounds
 {
     public const int RequiredPairs = 3;
-    public const int MaximumPairs = 48;
+    public const int MaximumPairs = 64;
     public const int MaximumRankedRows = 16;
     public const int MaximumFixtureBytes = 1024 * 1024;
     public const int MaximumRawResponseBytes = 4 * 1024 * 1024;
@@ -155,7 +155,38 @@ public sealed record AllocationDirectionalObservation(
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AllocationDirectionalAttemptEvidence? AttemptEvidence { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CaptureId { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ProcessIdentity { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ComparisonRole { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AllocationDirectionalQuantityEvidence? QuantityEvidence { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TypeAvailability { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SiteAvailability { get; init; }
 }
+
+public sealed record AllocationDirectionalQuantityEvidence(
+    string Quantity,
+    string Unit,
+    string BaselineCurrentSemantics,
+    string DenominatorQuantity,
+    string DenominatorUnit,
+    long DenominatorValue,
+    string Normalization,
+    bool LoadSensitive,
+    string Availability,
+    string? AbstentionReason,
+    IReadOnlyList<string> Assumptions);
 
 public sealed record AllocationDirectionalPair(
     string PairId,
@@ -182,7 +213,10 @@ public sealed record AllocationDirectionalScenarioResult(
     int ValidPairs,
     bool ExpectedBehaviorObserved,
     bool UnsafeDirectionalEvidenceObserved,
-    IReadOnlyList<string> Findings);
+    IReadOnlyList<string> Findings)
+{
+    public bool Assessable { get; init; }
+}
 
 public sealed record AllocationDirectionalStudyReport(
     int SchemaVersion,
@@ -195,4 +229,10 @@ public sealed record AllocationDirectionalStudyReport(
     bool NumericGatePassed,
     bool BlindedEvaluationRequired,
     IReadOnlyList<AllocationDirectionalScenarioResult> Scenarios,
-    IReadOnlyList<string> Limitations);
+    IReadOnlyList<string> Limitations)
+{
+    public bool BlindedEvaluationRan { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BlindedEvaluationResult { get; init; }
+}
