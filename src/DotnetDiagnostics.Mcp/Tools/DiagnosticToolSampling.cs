@@ -191,77 +191,15 @@ internal static class DiagnosticToolSampling
         [Description("Duration of the sampling window in seconds. Must be >= 1. Defaults to 10.")] int durationSeconds = 10,
         [Description("Maximum number of types to return in each top-N list (TopByBytes and TopByCount). Must be >= 1. Defaults to 25.")] int topN = 25,
         CancellationToken cancellationToken = default)
-    {
-        if (durationSeconds < 1) return InvalidArg<AllocationSample>(nameof(durationSeconds), "must be >= 1");
-        if (topN < 1) return InvalidArg<AllocationSample>(nameof(topN), "must be >= 1");
-
-        var resolved = await ResolveContextAsync<AllocationSample>(resolver, processId, cancellationToken).ConfigureAwait(false);
-        if (resolved.Failure is not null) return resolved.Failure;
-        var pid = resolved.ProcessId;
-        var ctx = resolved.Context;
-
-        AllocationSampleResult result;
-        try
-        {
-            result = await sampler.SampleAsync(pid, TimeSpan.FromSeconds(durationSeconds), topN, cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return DiagnosticResult.Fail<AllocationSample>(
-                ex.Message,
-                new DiagnosticError("PermissionDenied", ex.Message, ex.GetType().FullName),
-                new NextActionHint("inspect_process", "Check capability matrix to confirm what's available for this process.",
-                    new Dictionary<string, object?> { ["processId"] = pid }));
-        }
-
-        var sample = result.Summary;
-        var reproducibility = AllocationReproducibilityCaptureMetadata.Create(
-            ctx,
-            pid,
+        => await SamplerUseCases.CollectAllocationSample(
+            sampler,
+            handles,
+            resolver,
+            processId,
             durationSeconds,
-            topN);
-        var handle = handles.Register(
-            pid,
-            "allocation-sample",
-            new AllocationSampleArtifact(sample, result.Artifact)
-            {
-                EstimatedBytesTrace = result.EstimatedBytesArtifact,
-                Reproducibility = reproducibility,
-            },
-            CpuSampleHandleTtl,
-            evictWhenProcessExits: false,
-            origin: HandleOrigin.Live);
-        var signals = AllocationSignals.Detect(sample, handle.Id);
-
-        var topType = sample.TopByBytes.Count > 0 ? sample.TopByBytes[0] : null;
-        var unknownOnly = topType?.TypeName == "<unknown>" && sample.TopByBytes.Count == 1;
-        var summaryText = unknownOnly
-            ? $"Captured {sample.TotalEvents} allocation events ({sample.TotalBytes:N0} bytes total) over {durationSeconds}s, " +
-              $"but TypeName was empty for all events (expected on NativeAOT). " +
-              $"Drill into allocation call sites with query_snapshot(handle=\"{handle.Id}\", view=\"call-tree\") to see native allocation frames."
-            : topType is not null
-                ? $"Captured {sample.TotalEvents} allocation events ({sample.TotalBytes:N0} bytes total) over {durationSeconds}s. " +
-                  $"Top type by bytes: {topType.TypeName} ({topType.TotalBytes:N0} bytes, {topType.EventCount} events). " +
-                  $"Drill into allocation call sites with query_snapshot(handle=\"{handle.Id}\", view=\"call-tree\")."
-                : $"Captured {sample.TotalEvents} allocation events but no type aggregation surfaced — " +
-                  $"increase durationSeconds or drive a workload that allocates during the window.";
-
-        var ok = DiagnosticResult.OkWithHandle(
-            sample,
-            summaryText,
-            handle.Id,
-            handle.ExpiresAt,
-            new NextActionHint("query_snapshot", "Walk the merged allocation call-site tree to find which code paths are allocating the most.",
-                new Dictionary<string, object?> { ["handle"] = handle.Id, ["maxDepth"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeDepth, ["maxNodes"] = CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes })
-            { Priority = NextActionHintPriority.High },
-            new NextActionHint("collect_sample", "Cross-reference: identify hot CPU paths that correlate with the top allocating types.",
-                new Dictionary<string, object?> { ["kind"] = "cpu", ["processId"] = pid, ["durationSeconds"] = durationSeconds }),
-            new NextActionHint("collect_events", "Observe GC pause frequency and generation distribution caused by this allocation load.",
-                new Dictionary<string, object?> { ["kind"] = "gc", ["processId"] = pid, ["durationSeconds"] = durationSeconds }))
-            with
-        { Signals = signals.Count > 0 ? signals : null };
-        return WithContext(ok, ctx);
-    }
+            topN,
+            CpuSampleQueryDispatcher.MaxProjectedCallTreeNodes,
+            cancellationToken).ConfigureAwait(false);
 
     public static async Task<DiagnosticResult<DotnetDiagnostics.Core.CpuEfficiency.CpuEfficiencySample>> CollectCpuEfficiencySample(
         DotnetDiagnostics.Core.CpuEfficiency.ICpuEfficiencySampler sampler,
