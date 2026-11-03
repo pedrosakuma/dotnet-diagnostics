@@ -5,6 +5,13 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 
 public sealed class AllocationDirectionalTests
 {
+    private static readonly string EmpiricalFixturePath = ScenarioManifestLoader.ScenarioPath(
+        "Fixtures",
+        "AllocationDirectional",
+        "allocation-directional-baseline-current-v1.windows-x64.evidence.json");
+    private static readonly string EmpiricalArtifactDirectory = RepositoryPath(
+        "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/Fixtures/AllocationDirectional");
+
     [Fact]
     public void FrozenProtocol_PredeclaresExecutionAndInternalOnlyGates()
     {
@@ -22,8 +29,10 @@ public sealed class AllocationDirectionalTests
             AllocationDirectionalProtocol.SourceBaseCommit);
         root.GetProperty("sourceBaseCommit").GetString().Should().Be(
             AllocationDirectionalProtocol.SourceBaseCommit);
-        var sourceHashes = root.GetProperty("frozenInputs")
-            .GetProperty("sourceFilesSha256");
+        var frozenInputs = root.GetProperty("frozenInputs");
+        frozenInputs.GetProperty("textHashCanonicalization").GetString().Should().Be(
+            AllocationDirectionalProtocol.TextHashCanonicalization);
+        var sourceHashes = frozenInputs.GetProperty("sourceFilesSha256");
         sourceHashes.EnumerateObject().Should().HaveCount(
             AllocationDirectionalProtocol.FrozenSourcePaths.Count);
         foreach (var sourcePath in AllocationDirectionalProtocol.FrozenSourcePaths)
@@ -228,6 +237,68 @@ public sealed class AllocationDirectionalTests
         result.ExpectedBehaviorObserved.Should().BeFalse();
     }
 
+    [Fact]
+    public void EmpiricalFixture_PreservesInconclusiveDecisionAndEveryDenominator()
+    {
+        var fixture = AllocationDirectionalJson.ReadFixture(EmpiricalFixturePath);
+        var protocolPath = ScenarioManifestLoader.ScenarioPath(
+            "Fixtures",
+            "AllocationDirectional",
+            "allocation-directional-baseline-current-v1.protocol.json");
+
+        fixture.CanonicalProtocolSha256.Should().Be(
+            AllocationDirectionalProtocol.Sha256(protocolPath));
+        fixture.ProvenanceCorrections.Should().ContainSingle(item =>
+            item.Contains("checkout-independent", StringComparison.Ordinal));
+        fixture.Pairs.Should().HaveCount(AllocationDirectionalCapturePlan.TotalPairs);
+        var observations = fixture.Pairs.SelectMany(pair =>
+            new[] { pair.Baseline, pair.Current }).ToArray();
+        observations.Count(observation =>
+                observation.Origin == AllocationDirectionalOrigin.LiveMcp)
+            .Should().Be(AllocationDirectionalCapturePlan.LiveMcpSides);
+        observations.Count(observation =>
+                observation.Origin == AllocationDirectionalOrigin.ControlledProjection)
+            .Should().Be(AllocationDirectionalCapturePlan.ControlledProjectionSides);
+        observations.Where(observation =>
+                observation.Origin == AllocationDirectionalOrigin.LiveMcp)
+            .Should().OnlyContain(observation =>
+                observation.Outcome == AllocationDirectionalAttemptOutcome.Failed);
+
+        var report = AllocationDirectionalHarness.Evaluate(fixture);
+
+        report.Decision.Should().Be(AllocationDirectionalDecision.Inconclusive);
+        report.NumericGatePassed.Should().BeFalse();
+        report.BlindedEvaluationRequired.Should().BeFalse();
+        report.Scenarios.Should().BeEmpty();
+        report.Limitations.Should().ContainSingle(item =>
+            item.Contains("Healthy A/A", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void EmpiricalArtifacts_HavePortableDocumentedFingerprints()
+    {
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.protocol.json",
+            14_564,
+            "ef12d0f6caa48cc2e4be51317f19142094e3d3e8c75af5b8ffd4a7bc2610713a");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.execution.json",
+            65_282,
+            "06b917e17524f9f4b2ffb4ebfa0dd504327a49a2fa59b2fb8efc37df92bc7dfc");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.json",
+            65_727,
+            "c251312571df99ea1a4d2e5c10b53c8adf4a2347ea2a24b0ef67dedbde061c50");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.ledger.jsonl",
+            18_657,
+            "087402d4a6813092a4c3f250b34713ba8c2e263eb269cec207036daa7dcaa690");
+        AssertFingerprint(
+            "allocation-directional-baseline-current-v1.windows-x64.evidence.report.json",
+            483,
+            "12ec9b0ecf6f551111af899e50af6ce9e635f3be2a6b7b505dea3773e058e7c4");
+    }
+
     private static AllocationDirectionalFixture SyntheticFixture()
     {
         var pairs = new List<AllocationDirectionalPair>();
@@ -334,6 +405,8 @@ public sealed class AllocationDirectionalTests
             AllocationDirectionalHarness.ProtocolId,
             AllocationDirectionalHarness.ProtocolVersion,
             "synthetic-protocol-sha256",
+            "synthetic-canonical-protocol-sha256",
+            [],
             "2026-11-03T15:48:04Z",
             AllocationDirectionalProtocol.SourceBaseCommit,
             "synthetic",
@@ -354,6 +427,16 @@ public sealed class AllocationDirectionalTests
                 ?? throw new DirectoryNotFoundException(
                     "Could not locate the repository root."),
             relativePath.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private static void AssertFingerprint(
+        string fileName,
+        int expectedBytes,
+        string expectedSha256)
+    {
+        var path = Path.Combine(EmpiricalArtifactDirectory, fileName);
+        AllocationDirectionalProtocol.CanonicalByteCount(path).Should().Be(expectedBytes);
+        AllocationDirectionalProtocol.Sha256(path).Should().Be(expectedSha256);
     }
 
     private static AllocationDirectionalPair Pair(

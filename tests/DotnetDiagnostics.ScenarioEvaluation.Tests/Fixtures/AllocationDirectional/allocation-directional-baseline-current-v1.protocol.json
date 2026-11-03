@@ -7,16 +7,17 @@
   "prerequisiteCommit": "402c3d2fefc8bb094b7341e5482559ce953f9395",
   "sourceBaseCommit": "402c3d2fefc8bb094b7341e5482559ce953f9395",
   "frozenInputs": {
+    "textHashCanonicalization": "utf8-no-bom-crlf",
     "sourceFilesSha256": {
       "global.json": "29bafcc8fddcedd9662e2f2969697bfa84dd8e43758856113696fb1af3d96cd5",
       "samples/BadCodeSample/AllocationShapeWorkload.cs": "9902938dacf5007ca11cd2e48eccc0de86428e4f29bd10366ee8484ec1f6155d",
       "samples/BadCodeSample/Program.cs": "1341bf1f3aa4255ad6317ee97208a44d3b268ead0d5f039a3831a7519a64d442",
-      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalContracts.cs": "59bbbccddff96baac52d565ef9797c58f56a6f8f9e12726289812474766b6710",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalContracts.cs": "e299b50d50d5a96df41ad18b2977681925724f57882cd8e1bab2d89a503e3dc8",
       "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalHarness.cs": "059822f5fead105834a1e7174a3530a0f758071dea5e0b52d44c899b772828ca",
       "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalJson.cs": "1febba3a7f93c2ac6f74a1339667cfe64410678b9f9c0bb4998f54c3fa685ef2",
-      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalLive.cs": "2414d8744a19f51e86b2e900ff8c851a1d13a12040670f02424bbea484935d8a",
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalLive.cs": "9899e4ea95f798dc95705175ad282d4cb12a2ce61655a1dd5745127a3a1afc3c",
       "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalPlan.cs": "2c6e8f1e1ccfc19df77e3becceb1fce79f0fef1483db6a9354dcc689de22287b",
-      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalProtocol.cs": "769ca9daa442c030507192ec2e147c060601d1fc84a974dac7472b317862061a"
+      "tests/DotnetDiagnostics.ScenarioEvaluation.Tests/AllocationDirectionalProtocol.cs": "50e8a4f74abc914cada81165586d0f360baeeb8b828d9cb7ade75794f50a90bd"
     }
   },
   "modelVisibleMeasurementQualityFields": [],

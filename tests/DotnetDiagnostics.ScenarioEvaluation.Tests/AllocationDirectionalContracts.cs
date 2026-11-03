@@ -87,6 +87,8 @@ public sealed record AllocationDirectionalFixture(
     string ProtocolId,
     string ProtocolVersion,
     string ProtocolSha256,
+    string CanonicalProtocolSha256,
+    IReadOnlyList<string> ProvenanceCorrections,
     string FrozenAtUtc,
     string SourceBaseCommit,
     string Environment,

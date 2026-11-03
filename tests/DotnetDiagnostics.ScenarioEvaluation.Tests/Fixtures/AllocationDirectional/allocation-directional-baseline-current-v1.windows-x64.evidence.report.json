@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-directional-baseline-current",
+  "protocolVersion": "1.0.0",
+  "decision": "inconclusive",
+  "aaMaximumAbsoluteEstimatedBytesPerOperationRelativeDelta": 0,
+  "aaMaximumTypeShareMovement": 0,
+  "aaMaximumSiteShareMovement": 0,
+  "numericGatePassed": false,
+  "blindedEvaluationRequired": false,
+  "scenarios": [],
+  "limitations": [
+    "Healthy A/A did not retain the three predeclared valid independent pairs."
+  ]
+}

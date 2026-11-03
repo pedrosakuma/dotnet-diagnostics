@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
@@ -12,6 +13,7 @@ internal static class AllocationDirectionalProtocol
 {
     public const string SourceBaseCommit =
         "402c3d2fefc8bb094b7341e5482559ce953f9395";
+    public const string TextHashCanonicalization = "utf8-no-bom-crlf";
 
     public static IReadOnlyList<string> FrozenSourcePaths { get; } =
     [
@@ -108,8 +110,20 @@ internal static class AllocationDirectionalProtocol
 
     internal static string Sha256(string path)
     {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        var bytes = CanonicalTextBytes(path);
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
+    internal static int CanonicalByteCount(string path)
+        => CanonicalTextBytes(path).Length;
+
+    private static byte[] CanonicalTextBytes(string path)
+    {
+        var text = File.ReadAllText(path)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace("\n", "\r\n", StringComparison.Ordinal);
+        return new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(text);
     }
 
     private static string RepositoryRoot()

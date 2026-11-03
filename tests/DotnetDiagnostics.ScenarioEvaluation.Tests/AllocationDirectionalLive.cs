@@ -63,6 +63,8 @@ public static class AllocationDirectionalLive
                 AllocationDirectionalHarness.ProtocolId,
                 AllocationDirectionalHarness.ProtocolVersion,
                 protocol.ProtocolSha256,
+                protocol.ProtocolSha256,
+                [],
                 protocol.FrozenAtUtc,
                 protocol.SourceBaseCommit,
                 $"{RuntimeInformation.OSDescription}; {Environment.Version}; {RuntimeInformation.ProcessArchitecture}",
