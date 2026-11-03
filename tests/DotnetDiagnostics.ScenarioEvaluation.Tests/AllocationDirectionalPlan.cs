@@ -10,6 +10,14 @@ internal sealed record AllocationDirectionalPlannedSide(
     int RetainedBytes,
     bool DriveWorkload);
 
+internal sealed record AllocationDirectionalCaptureSettings(
+    int CaptureDurationSeconds,
+    int ArmDelayMilliseconds,
+    int WorkloadMilliseconds,
+    int TopN,
+    int AttemptTimeoutSeconds,
+    int McpCompletionTimeoutSeconds);
+
 internal sealed record AllocationDirectionalPlanEntry(
     AllocationDirectionalScenario Scenario,
     string PairPrefix,

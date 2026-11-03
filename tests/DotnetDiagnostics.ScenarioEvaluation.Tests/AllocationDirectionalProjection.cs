@@ -39,7 +39,11 @@ internal static class AllocationDirectionalProjection
         {
             var error = rawEvidence.ByteCount <= AllocationDirectionalBounds.MaximumRawResponseBytes
                 ? ReadIsErrorMetadata(raw)
-                : (Kind: (string?)null, DetailState: "not-inspected", DetailByteCount: 0);
+                : (
+                    Kind: (string?)null,
+                    Code: (string?)null,
+                    DetailState: "not-inspected",
+                    DetailByteCount: 0);
             return Failure(
                 attemptId,
                 workloadIdentity,
@@ -50,7 +54,8 @@ internal static class AllocationDirectionalProjection
                 error.Kind,
                 error.DetailState,
                 error.DetailByteCount,
-                rawEvidence);
+                rawEvidence,
+                errorCode: error.Code);
         }
 
         if (rawEvidence.ByteCount > AllocationDirectionalBounds.MaximumRawResponseBytes)
@@ -119,7 +124,8 @@ internal static class AllocationDirectionalProjection
                     error.Kind,
                     error.DetailState,
                     error.DetailByteCount,
-                    rawEvidence);
+                    rawEvidence,
+                    errorCode: error.Code);
             }
 
             if (!root.TryGetProperty("data", out var data)
@@ -477,40 +483,52 @@ internal static class AllocationDirectionalProjection
     private static (
         bool Present,
         string? Kind,
+        string? Code,
         string DetailState,
         int DetailByteCount) ReadError(JsonElement root)
     {
         if (!root.TryGetProperty("error", out var error)
             || error.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
-            return (false, null, "absent", 0);
+            return (false, null, null, "absent", 0);
         }
 
         if (error.ValueKind != JsonValueKind.Object)
         {
-            return (true, "mcp_error", "malformed-redacted", 0);
+            return (true, "mcp_error", null, "malformed-redacted", 0);
         }
 
         var kind = error.TryGetProperty("kind", out var kindElement)
             && kindElement.ValueKind == JsonValueKind.String
                 ? SafeErrorKind(kindElement.GetString())
                 : "mcp_error";
+        var code = error.TryGetProperty("code", out var codeElement)
+            && codeElement.ValueKind == JsonValueKind.String
+                ? SafeErrorCode(codeElement.GetString())
+                : null;
         if (!error.TryGetProperty("detail", out var detail)
             || detail.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
-            return (true, kind, "absent", 0);
+            return (true, kind, code, "absent", 0);
+        }
+
+        if (code is null && detail.ValueKind == JsonValueKind.String)
+        {
+            code = SafeErrorCode(detail.GetString());
         }
 
         var byteCount = Encoding.UTF8.GetByteCount(detail.GetRawText());
         return (
             true,
             kind,
+            code,
             "present-redacted",
             Math.Min(byteCount, AllocationDirectionalBounds.MaximumRawResponseBytes));
     }
 
     private static (
         string? Kind,
+        string? Code,
         string DetailState,
         int DetailByteCount) ReadIsErrorMetadata(string raw)
     {
@@ -519,17 +537,17 @@ internal static class AllocationDirectionalProjection
             using var document = JsonDocument.Parse(raw);
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                return (null, "not-inspected", 0);
+                return (null, null, "not-inspected", 0);
             }
 
             var error = ReadError(document.RootElement);
             return error.Present
-                ? (error.Kind, error.DetailState, error.DetailByteCount)
-                : (null, "absent", 0);
+                ? (error.Kind, error.Code, error.DetailState, error.DetailByteCount)
+                : (null, null, "absent", 0);
         }
         catch (JsonException)
         {
-            return (null, "not-inspected", 0);
+            return (null, null, "not-inspected", 0);
         }
     }
 
@@ -547,6 +565,20 @@ internal static class AllocationDirectionalProjection
         return value;
     }
 
+    private static string? SafeErrorCode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || value.Length > AllocationDirectionalBounds.MaximumErrorCodeLength
+            || value.Any(character =>
+                !char.IsAsciiLetterOrDigit(character)
+                && character is not ('.' or '_' or '-')))
+        {
+            return null;
+        }
+
+        return value;
+    }
+
     private static AllocationDirectionalProjectionResult Failure(
         string attemptId,
         string workloadIdentity,
@@ -557,7 +589,8 @@ internal static class AllocationDirectionalProjection
         string? errorKind,
         string errorDetailState,
         int errorDetailByteCount,
-        AllocationDirectionalRawResponseEvidence rawResponse)
+        AllocationDirectionalRawResponseEvidence rawResponse,
+        string? errorCode = null)
         => new(
             null,
             Evidence(
@@ -576,7 +609,8 @@ internal static class AllocationDirectionalProjection
                 errorDetailByteCount,
                 rawResponse,
                 null,
-                AllocationDirectionalCleanupState.NotStarted));
+                AllocationDirectionalCleanupState.NotStarted,
+                errorCode));
 
     private static AllocationDirectionalAttemptEvidence Evidence(
         string attemptId,
@@ -591,7 +625,8 @@ internal static class AllocationDirectionalProjection
         int errorDetailByteCount,
         AllocationDirectionalRawResponseEvidence? rawResponse,
         string? exceptionType,
-        AllocationDirectionalCleanupState cleanupState)
+        AllocationDirectionalCleanupState cleanupState,
+        string? errorCode = null)
     {
         ValidateOperationId(operationId);
         return new(
@@ -607,7 +642,10 @@ internal static class AllocationDirectionalProjection
             errorDetailByteCount,
             rawResponse,
             exceptionType,
-            cleanupState);
+            cleanupState)
+        {
+            ErrorCode = errorCode,
+        };
     }
 
     private static void ValidateOperationId(string operationId)

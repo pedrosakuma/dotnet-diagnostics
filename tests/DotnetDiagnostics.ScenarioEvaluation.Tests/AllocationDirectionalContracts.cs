@@ -10,6 +10,7 @@ public static class AllocationDirectionalBounds
     public const int MaximumFixtureBytes = 1024 * 1024;
     public const int MaximumRawResponseBytes = 4 * 1024 * 1024;
     public const int MaximumErrorKindLength = 64;
+    public const int MaximumErrorCodeLength = 96;
     public const int MaximumOperationIdLength = 96;
     public const decimal MaximumAllowedAaRelativeDelta = 0.25m;
     public const decimal MaximumAllowedAaShareMovement = 0.25m;
@@ -131,7 +132,11 @@ public sealed record AllocationDirectionalAttemptEvidence(
     int ErrorDetailByteCount,
     AllocationDirectionalRawResponseEvidence? RawResponse,
     string? ExceptionType,
-    AllocationDirectionalCleanupState CleanupState);
+    AllocationDirectionalCleanupState CleanupState)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ErrorCode { get; init; }
+}
 
 public sealed record AllocationDirectionalObservation(
     string AttemptId,
