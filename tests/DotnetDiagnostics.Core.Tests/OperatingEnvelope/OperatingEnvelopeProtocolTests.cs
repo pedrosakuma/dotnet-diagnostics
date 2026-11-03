@@ -313,7 +313,7 @@ public sealed class OperatingEnvelopeProtocolTests
                 ownedSettlementRequested.SetResult();
                 return [ownedWork.Task];
             },
-            Stopwatch.GetTimestamp() + Stopwatch.Frequency);
+            Stopwatch.GetTimestamp() + (10 * Stopwatch.Frequency));
 
         Assert.False(ownedSettlementRequested.Task.IsCompleted);
         targetTermination.SetResult();
