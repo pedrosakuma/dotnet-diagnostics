@@ -175,7 +175,7 @@ internal static class OperationalMcpEvaluationRunner
             conclusions,
             [
                 "The pilot is bounded operational evidence, not a model leaderboard, correctness proof, PR gate, universal product claim, or automatic product-adoption verdict.",
-                "Protocol 9 compares only control, median/MAD, and Jaccard under the frozen lexicographic selector after the #1368 evaluator alias correction; it does not reinterpret preserved protocols 1 through 8.",
+                "Protocol 10 compares only control, median/MAD, and Jaccard under the frozen lexicographic selector after the #1368 alias and #1372 canonical-validation corrections; it does not reinterpret preserved protocols 1 through 9.",
                 "The diagnosing and assessing phases use different frozen models and isolated contexts; that does not eliminate shared-provider or training-data bias.",
                 "Fresh processes and captures reduce dependence but do not eliminate platform, scheduler, JIT, EventPipe, symbol, or workload variability.",
                 "Sample recognition cannot be ruled out because repository-owned workload symbols may appear in MCP evidence.",

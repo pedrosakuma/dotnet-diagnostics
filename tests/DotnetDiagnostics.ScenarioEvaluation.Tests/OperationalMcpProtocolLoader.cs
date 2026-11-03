@@ -26,18 +26,18 @@ internal static class OperationalMcpProtocolLoader
         ".yaml",
     ];
 
-    public const int CurrentSchemaVersion = 9;
-    public const int CurrentRunSchemaVersion = 9;
-    public const int CurrentPilotSchemaVersion = 9;
+    public const int CurrentSchemaVersion = 10;
+    public const int CurrentRunSchemaVersion = 10;
+    public const int CurrentPilotSchemaVersion = 10;
     internal static readonly string DefaultOutputRoot =
-        Path.Combine("artifacts", "operational-mcp-pilot-v9");
-    internal const string FrozenProtocolVersion = "9.0.0";
+        Path.Combine("artifacts", "operational-mcp-pilot-v10");
+    internal const string FrozenProtocolVersion = "10.0.0";
     internal const string FrozenProtocolFingerprint =
-        "896f4f3230a274b5f5678e685529aec8820b0613fe085142cca189e1e7586adb";
+        "2c2d19d50b4d967494cea69eb9ab497ccf20d7187513ea950fb034bddb320fe8";
     internal const string FrozenInventoryFingerprint =
         "9313a6292282548dd707bc0ac65f456d3a8099e61d5f2d56eef29bc77ff6a0b8";
     internal const string FrozenProjectionFingerprint =
-        "26a002bc5b240d7a2ce514573e1fa60b71ee737e4a95302c54a9357a657049ea";
+        "5f55d7df5963728cc0c1c13bfb202ce0eb73b46ac491288bdfd7aaeae2d459eb";
     internal const string PreservedV1FileSha256 =
         "c95d63300432d0d09e2b65bcab5b9fae0c2cfe8ee9ee2fef456714975b939891";
     internal const string PreservedV2FileSha256 =
@@ -54,12 +54,14 @@ internal static class OperationalMcpProtocolLoader
         "5325b3f59416ada38ee6569f75e93ed0650cf940e2f0a50e15b69f5fef78accd";
     internal const string PreservedV8FileSha256 =
         "9a94a6158c6e9da3f125a2f9fb151a0279bbe1ad3d33988a40ee9a2c3227fac3";
+    internal const string PreservedV9FileSha256 =
+        "aa5a37483b9212db115bec87f871c1def53fd73702a849ebb402ecf3234585bf";
 
     public static string DefaultPath
         => Path.Combine(
             AppContext.BaseDirectory,
             "OperationalMcp",
-            "operational-mcp-allocation-median-mad-jaccard-v9.protocol.json");
+            "operational-mcp-allocation-focused-selection-v10.protocol.json");
 
     public static string PreservedV1Path
         => Path.Combine(
@@ -108,6 +110,12 @@ internal static class OperationalMcpProtocolLoader
             AppContext.BaseDirectory,
             "OperationalMcp",
             "operational-mcp-allocation-field-isolation-v8.protocol.json");
+
+    public static string PreservedV9Path
+        => Path.Combine(
+            AppContext.BaseDirectory,
+            "OperationalMcp",
+            "operational-mcp-allocation-median-mad-jaccard-v9.protocol.json");
 
     public static OperationalMcpProtocol LoadDefault()
     {
@@ -229,6 +237,23 @@ internal static class OperationalMcpProtocolLoader
         return OperationalMcpJson.Read<OperationalMcpProtocol>(PreservedV8Path);
     }
 
+    public static void ValidatePreservedV9()
+    {
+        var fileSha256 = Convert.ToHexStringLower(
+            SHA256.HashData(File.ReadAllBytes(PreservedV9Path)));
+        if (!string.Equals(fileSha256, PreservedV9FileSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The preserved operational MCP protocol 9.0.0 file changed.");
+        }
+    }
+
+    public static OperationalMcpProtocol LoadPreservedV9()
+    {
+        ValidatePreservedV9();
+        return OperationalMcpJson.Read<OperationalMcpProtocol>(PreservedV9Path);
+    }
+
     public static IReadOnlyList<string> PreservedProtocolPaths =>
     [
         PreservedV1Path,
@@ -239,6 +264,7 @@ internal static class OperationalMcpProtocolLoader
         PreservedV6Path,
         PreservedV7Path,
         PreservedV8Path,
+        PreservedV9Path,
     ];
 
     public static string Fingerprint<T>(T value)
@@ -351,7 +377,7 @@ internal static class OperationalMcpProtocolLoader
         if (testCase.Family != OperationalMcpFamily.AllocationReproducibility)
         {
             throw new InvalidDataException(
-                "Protocol 9.0.0 is allocation-only.");
+                "Protocol 10.0.0 is allocation-only.");
         }
 
         const string kind = "allocation";
@@ -435,7 +461,7 @@ internal static class OperationalMcpProtocolLoader
                     or "summary"))
         {
             throw new InvalidDataException(
-                "Protocol 9 must explicitly declare typed, non-canonical additive assessor properties.");
+                "Protocol 10 must explicitly declare typed, non-canonical additive assessor properties.");
         }
         _ = protocol.Budgets.ToAgentBudget();
         if (protocol.Budgets.MaximumSuiteWallTimeSeconds is < 1 or > 14_400)
@@ -511,7 +537,7 @@ internal static class OperationalMcpProtocolLoader
             || protocol.DecisionRule.ModelVisibleFieldCounts.Any(value => value.Value < 0))
         {
             throw new InvalidDataException(
-                "Protocol 9 must freeze only control, median/MAD, and Jaccard arms with non-negative model-visible field counts.");
+                "Protocol 10 must freeze only control, median/MAD, and Jaccard arms with non-negative model-visible field counts.");
         }
 
         RequireFingerprint(
@@ -541,7 +567,7 @@ internal static class OperationalMcpProtocolLoader
         if (!eligible.SetEquals([OperationalMcpFamily.AllocationReproducibility]))
         {
             throw new InvalidDataException(
-                "The frozen v9 protocol must contain only allocation reproducibility.");
+                "The frozen v10 protocol must contain only allocation reproducibility.");
         }
 
         foreach (var entry in protocol.Inventory)
@@ -763,18 +789,10 @@ internal static class OperationalMcpProtocolLoader
                 if (protocol.Cases.Count(value =>
                         value.Partition == OperationalMcpPartition.Development) != 2
                     || protocol.Cases.Any(value =>
-                        value.Id.Contains("1338", StringComparison.Ordinal)
-                        || value.Id.Contains("v1", StringComparison.Ordinal)
-                        || value.Id.Contains("v2", StringComparison.Ordinal)
-                        || value.Id.Contains("v3", StringComparison.Ordinal)
-                        || value.Id.Contains("v4", StringComparison.Ordinal)
-                        || value.Id.Contains("v5", StringComparison.Ordinal)
-                        || value.Id.Contains("v6", StringComparison.Ordinal)
-                        || value.Id.Contains("v7", StringComparison.Ordinal)
-                        || value.Id.Contains("v8", StringComparison.Ordinal)))
+                        !value.Id.StartsWith("v10-", StringComparison.Ordinal)))
                 {
                     throw new InvalidDataException(
-                        "The v9 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
+                        "The v10 protocol must contain fresh positive and healthy development cases and no prior protocol identity.");
                 }
             }
 
@@ -815,7 +833,7 @@ internal static class OperationalMcpProtocolLoader
             || !developmentClasses.Contains(OperationalMcpCaseClass.HealthyControl))
         {
             throw new InvalidDataException(
-                "The v9 development partition must contain one positive and one healthy allocation case.");
+                "The v10 development partition must contain one positive and one healthy allocation case.");
         }
     }
 
