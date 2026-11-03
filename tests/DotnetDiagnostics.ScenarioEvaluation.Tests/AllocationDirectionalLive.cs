@@ -58,6 +58,15 @@ public static class AllocationDirectionalLive
             }
 
             AddPartialAttributionControls(pairs);
+            AllocationDirectionalLedger.ValidateExactTerminalAccounting(
+                ledgerPath,
+                pairs.Where(pair => pair.Baseline.Origin == AllocationDirectionalOrigin.LiveMcp)
+                    .SelectMany(pair => new[]
+                    {
+                        pair.Baseline.AttemptId,
+                        pair.Current.AttemptId,
+                    })
+                    .ToArray());
             return new(
                 AllocationDirectionalJson.CurrentSchemaVersion,
                 AllocationDirectionalHarness.ProtocolId,
@@ -127,18 +136,20 @@ public static class AllocationDirectionalLive
         AllocationDirectionalPlannedSide workload,
         CancellationToken cancellationToken)
     {
-        AppendLedger(ledgerPath, attemptId, "started", null);
+        AllocationDirectionalLedger.AppendStarted(
+            ledgerPath,
+            attemptId,
+            DateTimeOffset.UtcNow);
         var observation = await CaptureObservationAsync(
             client,
             attemptId,
             workloadIdentity,
             workload,
             cancellationToken).ConfigureAwait(false);
-        AppendLedger(
+        AllocationDirectionalLedger.AppendCompleted(
             ledgerPath,
-            attemptId,
-            "completed",
-            observation.Outcome.ToString());
+            observation,
+            DateTimeOffset.UtcNow);
         return observation;
     }
 
@@ -154,15 +165,19 @@ public static class AllocationDirectionalLive
         attempt.CancelAfter(TimeSpan.FromSeconds(
             AllocationDirectionalCapturePlan.AttemptTimeoutSeconds));
         Task<CallToolResult>? collectTask = null;
+        LiveSampleProcess? sample = null;
+        AllocationDirectionalObservation? observation = null;
+        var stage = AllocationDirectionalAttemptStage.ProcessStart;
+        var operationId = "process.start-published";
+        Exception? cleanupException = null;
         try
         {
-            await using var sample = await LiveSampleProcess.StartPublishedAsync(
+            sample = await LiveSampleProcess.StartPublishedAsync(
                 "BadCodeSample",
                 new LiveSampleOptions
                 {
                     HarvestListeningUrl = true,
-                    WaitForHttpReady = true,
-                    ReadinessPath = "/",
+                    WaitForHttpReady = false,
                     DiagnosticTimeout = TimeSpan.FromSeconds(20),
                     HttpTimeout = TimeSpan.FromSeconds(20),
                     Environment = new Dictionary<string, string>(
@@ -170,13 +185,21 @@ public static class AllocationDirectionalLive
                         StringComparer.Ordinal),
                 },
                 attempt.Token).ConfigureAwait(false);
+            stage = AllocationDirectionalAttemptStage.ProcessReadiness;
+            operationId = "process.http-readiness";
+            var baseUrl = await sample.WaitForListeningUrlAsync(
+                TimeSpan.FromSeconds(20),
+                "/",
+                attempt.Token).ConfigureAwait(false);
             using var http = new HttpClient
             {
-                BaseAddress = new Uri(sample.BaseUrl),
+                BaseAddress = new Uri(baseUrl),
                 Timeout = TimeSpan.FromSeconds(30),
             };
             if (workload.WarmupMilliseconds > 0)
             {
+                stage = AllocationDirectionalAttemptStage.Warmup;
+                operationId = "workload.warmup-http";
                 using var warmup = await http.GetAsync(
                     WorkloadPath(
                         workload.Shape,
@@ -186,6 +209,8 @@ public static class AllocationDirectionalLive
                 warmup.EnsureSuccessStatusCode();
             }
 
+            stage = AllocationDirectionalAttemptStage.McpTransport;
+            operationId = "mcp.collect-sample-start";
             collectTask = client.CallToolAsync(
                 "collect_sample",
                 new Dictionary<string, object?>
@@ -197,6 +222,8 @@ public static class AllocationDirectionalLive
                 },
                 cancellationToken: attempt.Token).AsTask();
             await Task.Delay(ArmDelay, attempt.Token).ConfigureAwait(false);
+            stage = AllocationDirectionalAttemptStage.Workload;
+            operationId = "workload.capture-http";
             var workloadResults = workload.DriveWorkload
                 ? await Task.WhenAll(
                     Enumerable.Range(0, workload.Workers)
@@ -207,36 +234,86 @@ public static class AllocationDirectionalLive
                             attempt.Token)))
                     .ConfigureAwait(false)
                 : [];
+            stage = AllocationDirectionalAttemptStage.McpTransport;
+            operationId = "mcp.collect-sample-await";
             var collected = await collectTask.WaitAsync(
                 TimeSpan.FromSeconds(
                     AllocationDirectionalCapturePlan.McpCompletionTimeoutSeconds),
                 attempt.Token).ConfigureAwait(false);
+            stage = AllocationDirectionalAttemptStage.McpResponse;
+            operationId = "mcp.response-json";
             var raw = ResponseJson(collected);
-            using var response = JsonDocument.Parse(raw);
-            if (collected.IsError == true
-                || response.RootElement.TryGetProperty("error", out var error)
-                    && error.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+            stage = AllocationDirectionalAttemptStage.Projection;
+            operationId = "projection.data-allocation";
+            var projected = AllocationDirectionalProjection.Project(
+                attemptId,
+                workloadIdentity,
+                raw,
+                collected.IsError == true);
+            if (!projected.Succeeded)
             {
-                throw new InvalidOperationException("The real MCP allocation capture failed.");
+                observation = Failure(
+                    attemptId,
+                    workloadIdentity,
+                    workload,
+                    projected.Evidence,
+                    aborted: false);
+                goto Complete;
             }
 
-            var data = response.RootElement.GetProperty("data");
+            stage = AllocationDirectionalAttemptStage.Invariant;
+            operationId = "invariant.workload-denominator";
             var operations = workloadResults.Sum(value => value.Operations);
-            var requestedPayload = workloadResults.Length == 0
+            var requestedPayloads = workloadResults
+                .Select(value => value.RequestedPayloadBytesPerOperation)
+                .Distinct()
+                .ToArray();
+            var requestedPayload = requestedPayloads.Length == 0
                 ? 0
-                : workloadResults.Select(value => value.RequestedPayloadBytesPerOperation)
-                    .Distinct()
-                    .Single();
-            if (requestedPayload != workload.ExpectedPayloadBytesPerOperation)
+                : requestedPayloads[0];
+            if (requestedPayloads.Length > 1
+                || requestedPayload != workload.ExpectedPayloadBytesPerOperation
+                || workload.DriveWorkload && operations <= 0)
             {
-                throw new InvalidDataException(
-                    $"Workload '{workload.Shape}' returned {requestedPayload} requested payload bytes per operation; "
-                    + $"the frozen plan requires {workload.ExpectedPayloadBytesPerOperation}.");
+                observation = Failure(
+                    attemptId,
+                    workloadIdentity,
+                    workload,
+                    AllocationDirectionalProjection.ExternalFailure(
+                        attemptId,
+                        workloadIdentity,
+                        stage,
+                        operationId,
+                        AllocationDirectionalFailureCategory.DenominatorInvariant),
+                    aborted: false);
+                goto Complete;
             }
-            var retained = workloadResults.Length == 0
+
+            operationId = "invariant.retained-value";
+            var retainedValues = workloadResults.Select(value => value.RetainedBytes)
+                .Distinct()
+                .ToArray();
+            var retained = retainedValues.Length == 0
                 ? workload.RetainedBytes
-                : workloadResults.Select(value => value.RetainedBytes).Distinct().Single();
-            return new(
+                : retainedValues[0];
+            if (retainedValues.Length > 1 || retained != workload.RetainedBytes)
+            {
+                observation = Failure(
+                    attemptId,
+                    workloadIdentity,
+                    workload,
+                    AllocationDirectionalProjection.ExternalFailure(
+                        attemptId,
+                        workloadIdentity,
+                        stage,
+                        operationId,
+                        AllocationDirectionalFailureCategory.RetainedValueInvariant),
+                    aborted: false);
+                goto Complete;
+            }
+
+            var allocation = projected.Allocation!;
+            observation = new(
                 attemptId,
                 AllocationDirectionalAttemptOutcome.Passed,
                 AllocationDirectionalOrigin.LiveMcp,
@@ -248,40 +325,45 @@ public static class AllocationDirectionalLive
                 operations,
                 requestedPayload,
                 retained,
-                data.GetProperty("totalBytes").GetInt64(),
-                data.GetProperty("totalEvents").GetInt64(),
-                data.TryGetProperty("topBySite", out var sites)
-                    && sites.ValueKind == JsonValueKind.Array
-                    && sites.GetArrayLength() > 0
-                        ? "complete"
-                        : "no-site",
-                Rows(data.GetProperty("topByBytes"), "typeName"),
-                data.TryGetProperty("topBySite", out sites)
-                    ? Rows(sites, "frame", nestedKey: "method")
-                    : [],
+                allocation.TotalBytes,
+                allocation.TotalEvents,
+                allocation.AttributionState,
+                allocation.Types,
+                allocation.Sites,
                 null,
                 [
                     "Collected once through the repository-built MCP server over real stdio.",
                     "The target process was started independently for this observation and terminated after capture.",
                     "The operation denominator came from the workload response, not from allocation ticks.",
-                ]);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return Failure(attemptId, workloadIdentity, workload, "attempt_timeout", aborted: true);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
+                ])
+            {
+                AttemptEvidence = projected.Evidence,
+            };
+            goto Complete;
         }
         catch (Exception exception)
         {
-            return Failure(
+            var split = AllocationDirectionalAttemptClassifier.SplitOwnedStartupFailure(
+                stage,
+                exception);
+            cleanupException ??= split.CleanupException;
+            var category = AllocationDirectionalAttemptClassifier.ClassifyException(
+                stage,
+                split.PrimaryException,
+                cancellationToken.IsCancellationRequested);
+            observation = Failure(
                 attemptId,
                 workloadIdentity,
                 workload,
-                exception.GetType().Name,
-                aborted: false);
+                AllocationDirectionalProjection.ExternalFailure(
+                    attemptId,
+                    workloadIdentity,
+                    stage,
+                    operationId,
+                    category,
+                    split.PrimaryException),
+                AllocationDirectionalAttemptClassifier.IsAborted(category));
+            goto Complete;
         }
         finally
         {
@@ -294,13 +376,72 @@ public static class AllocationDirectionalLive
             {
                 try
                 {
-                    await collectTask.ConfigureAwait(false);
+                    await collectTask.WaitAsync(
+                            TimeSpan.FromSeconds(5),
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
                 }
-                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                catch (Exception exception)
                 {
+                    if (AllocationDirectionalAttemptClassifier.IsCollectDrainFailure(
+                            collectTask.IsCompleted,
+                            exception))
+                    {
+                        cleanupException ??= exception;
+                    }
+                }
+            }
+
+            if (sample is not null)
+            {
+                try
+                {
+                    await sample.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    cleanupException ??= exception;
+                }
+            }
+
+            if (observation?.AttemptEvidence is { } evidence)
+            {
+                var cleanup = AllocationDirectionalAttemptClassifier.FinalizeCleanup(
+                    evidence,
+                    observation.Outcome == AllocationDirectionalAttemptOutcome.Passed,
+                    cleanupException);
+                if (cleanup.ReplacePassedObservation)
+                {
+                    observation = Failure(
+                        attemptId,
+                        workloadIdentity,
+                        workload,
+                        cleanup.Evidence,
+                        aborted: false);
+                }
+                else
+                {
+                    observation = observation with
+                    {
+                        AttemptEvidence = cleanup.Evidence,
+                    };
                 }
             }
         }
+
+Complete:
+        return observation
+            ?? Failure(
+                attemptId,
+                workloadIdentity,
+                workload,
+                AllocationDirectionalProjection.ExternalFailure(
+                    attemptId,
+                    workloadIdentity,
+                    stage,
+                    operationId,
+                    AllocationDirectionalFailureCategory.UnexpectedHarnessException),
+                aborted: false);
     }
 
     private static async Task<WorkloadResult> RunWorkloadAsync(
@@ -331,36 +472,11 @@ public static class AllocationDirectionalLive
         int retainedBytes)
         => $"/allocation-shape?shape={Uri.EscapeDataString(shape)}&milliseconds={milliseconds}&retainedBytes={retainedBytes}";
 
-    private static AllocationDirectionalRankedRow[] Rows(
-        JsonElement rows,
-        string keyProperty,
-        string? nestedKey = null)
-    {
-        if (rows.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
-
-        return rows.EnumerateArray()
-            .Take(AllocationDirectionalBounds.MaximumRankedRows)
-            .Select(row =>
-            {
-                var key = nestedKey is null
-                    ? row.GetProperty(keyProperty).GetString()
-                    : row.GetProperty(keyProperty).GetProperty(nestedKey).GetString();
-                return new AllocationDirectionalRankedRow(
-                    key ?? "<unknown>",
-                    row.GetProperty("totalBytes").GetInt64(),
-                    row.GetProperty("eventCount").GetInt64());
-            })
-            .ToArray();
-    }
-
     private static AllocationDirectionalObservation Failure(
         string attemptId,
         string workloadIdentity,
         AllocationDirectionalPlannedSide workload,
-        string category,
+        AllocationDirectionalAttemptEvidence evidence,
         bool aborted)
         => new(
             attemptId,
@@ -381,8 +497,11 @@ public static class AllocationDirectionalLive
             "unavailable",
             [],
             [],
-            category,
-            ["The failed or aborted observation remains in its frozen pair denominator."]);
+            evidence.FailureCategory?.ToString(),
+            ["The failed or aborted observation remains in its frozen pair denominator."])
+        {
+            AttemptEvidence = evidence,
+        };
 
     private static void AddPartialAttributionControls(
         List<AllocationDirectionalPair> pairs)
@@ -442,22 +561,6 @@ public static class AllocationDirectionalLive
                 "Controlled projection derived from one retained live MCP observation; it is not an additional independent live attempt.",
             ],
         };
-
-    private static void AppendLedger(
-        string ledgerPath,
-        string attemptId,
-        string state,
-        string? outcome)
-    {
-        var entry = JsonSerializer.Serialize(new
-        {
-            attemptId,
-            state,
-            outcome,
-            recordedAtUtc = DateTimeOffset.UtcNow,
-        });
-        File.AppendAllText(ledgerPath, entry + Environment.NewLine);
-    }
 
     private static async Task<McpClient> StartMcpAsync(
         string artifactRoot,
