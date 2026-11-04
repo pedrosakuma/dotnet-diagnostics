@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-directional-baseline-current",
+  "protocolVersion": "4.0.0",
+  "decision": "inconclusive",
+  "aaMaximumAbsoluteEstimatedBytesPerOperationRelativeDelta": 0.0339063440779024611211319525,
+  "aaMaximumTypeShareMovement": 0.0002462798378063645038747824,
+  "aaMaximumSiteShareMovement": 0.0002462798378063645038747824,
+  "numericGatePassed": false,
+  "blindedEvaluationRequired": false,
+  "scenarios": [
+    {
+      "scenario": "trueIncrease",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The pair-first median increase (907,5078%) strictly exceeded the practical/A/A floor (10,0000%) with retained-inlier sign agreement."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "mixShiftStableTotal",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The normalized total remained within the 10,00% practical-equivalence margin while both type and site exceeded independent absolute and share floors."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "throughputIncreaseStablePerOperation",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": true,
+      "findings": [
+        "The robust effect summary exceeded the predeclared practical-equivalence margin in estimated sampled bytes per operation."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "lowerAllocationStableRetained",
+      "attemptedPairs": 6,
+      "validPairs": 6,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Healthy A/A variability exceeded the predeclared 10% relative bytes-per-operation sanity bound."
+      ],
+      "assessable": false
+    },
+    {
+      "scenario": "warmupTransientConverges",
+      "attemptedPairs": 9,
+      "validPairs": 9,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "The early median movement (106,6510%) strictly exceeded the 10,00% floor and the converged summary returned inclusively within the 10,00% equivalence margin."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "changedWorkload",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Every changed-workload pair was rejected by identity compatibility before directional interpretation."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "fixedStrideBias",
+      "attemptedPairs": 12,
+      "validPairs": 12,
+      "expectedBehaviorObserved": false,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Healthy A/A variability exceeded the predeclared 10% relative bytes-per-operation sanity bound."
+      ],
+      "assessable": false
+    },
+    {
+      "scenario": "partialAttribution",
+      "attemptedPairs": 3,
+      "validPairs": 3,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Type evidence remained independently available while site evidence explicitly abstained."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "missingOrZeroWeight",
+      "attemptedPairs": 3,
+      "validPairs": 0,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Missing or zero-weight evidence produced explicit abstention and remained in the denominator."
+      ],
+      "assessable": true
+    },
+    {
+      "scenario": "healthyAa",
+      "attemptedPairs": 3,
+      "validPairs": 3,
+      "expectedBehaviorObserved": true,
+      "unsafeDirectionalEvidenceObserved": false,
+      "findings": [
+        "Healthy A/A retained pair-first median/MAD evidence at or below the 10% sanity bound."
+      ],
+      "assessable": true
+    }
+  ],
+  "limitations": [
+    "No measurement-quality field is model-visible. Compatibility, availability, boundedness, provenance, fixed-stride limitations, and A/A envelopes are evaluator-only gates or explicit abstention reasons.",
+    "GCAllocationTick estimated bytes are sampled weights, not exact totals, retained bytes, object counts, severity, health, regression, or causality.",
+    "Every live side used the reviewed one-second capture, 200 ms arm, and 700 ms workload geometry. Calibrated low and periodic shapes pause one millisecond after every eight operations.",
+    "Every successful live side remained subject to the predeclared 75,000-event operating limit; Core caps remain unchanged.",
+    "Each live side is a separately started process. Failed and aborted sides remain in pair denominators and are never retried or replaced.",
+    "Operations per second proves only the calibrated throughput manipulation; estimated sampled bytes per operation is the normalized allocation quantity.",
+    "Allocated types and allocation sites are independent inventories; no type-to-site relationship is inferred.",
+    "The numeric gate did not authorize blinded evaluation."
+  ],
+  "blindedEvaluationRan": false
+}

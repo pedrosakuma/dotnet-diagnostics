@@ -18,6 +18,10 @@ internal static class AllocationDirectionalEnvironmentVariables
         "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V3_FIXTURE_PATH";
     public const string V3ProtocolFreezePath =
         "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V3_PROTOCOL_FREEZE_PATH";
+    public const string V4FixturePath =
+        "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V4_FIXTURE_PATH";
+    public const string V4ProtocolFreezePath =
+        "DOTNET_DIAGNOSTICS_ALLOCATION_DIRECTIONAL_V4_PROTOCOL_FREEZE_PATH";
 }
 
 public static class AllocationDirectionalLive
@@ -42,6 +46,7 @@ public static class AllocationDirectionalLive
             AllocationDirectionalHarness.ProtocolVersion,
             "v2-partial",
             "partial-attribution-v2",
+            DefaultCaptureSettings,
             cancellationToken).ConfigureAwait(false);
 
     public static async Task<AllocationDirectionalFixture> CaptureV3Async(
@@ -55,6 +60,21 @@ public static class AllocationDirectionalLive
             AllocationDirectionalV3Protocol.ProtocolVersion,
             "v3-partial",
             "partial-attribution-v3",
+            DefaultCaptureSettings,
+            cancellationToken).ConfigureAwait(false);
+
+    public static async Task<AllocationDirectionalFixture> CaptureV4Async(
+        string ledgerPath,
+        CancellationToken cancellationToken)
+        => await CaptureCoreAsync(
+            ledgerPath,
+            AllocationDirectionalV4CapturePlan.Entries,
+            AllocationDirectionalV4Protocol.ValidateFrozen,
+            AllocationDirectionalV4Protocol.ProtocolId,
+            AllocationDirectionalV4Protocol.ProtocolVersion,
+            "final-v4-partial",
+            "final-partial-attribution-v4",
+            AllocationDirectionalV4CapturePlan.CaptureSettings,
             cancellationToken).ConfigureAwait(false);
 
     private static async Task<AllocationDirectionalFixture> CaptureCoreAsync(
@@ -65,6 +85,7 @@ public static class AllocationDirectionalLive
         string protocolVersion,
         string partialPairPrefix,
         string partialWorkloadIdentity,
+        AllocationDirectionalCaptureSettings captureSettings,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ledgerPath);
@@ -96,6 +117,7 @@ public static class AllocationDirectionalLive
                         plan.ComparisonAxis,
                         plan.Baseline,
                         plan.Current,
+                        captureSettings,
                         cancellationToken).ConfigureAwait(false));
                 }
             }
@@ -150,6 +172,7 @@ public static class AllocationDirectionalLive
         string comparisonAxis,
         AllocationDirectionalPlannedSide baseline,
         AllocationDirectionalPlannedSide current,
+        AllocationDirectionalCaptureSettings captureSettings,
         CancellationToken cancellationToken)
     {
         var baselineObservation = await CaptureWithLedgerAsync(
@@ -158,6 +181,7 @@ public static class AllocationDirectionalLive
             $"{pairId}-baseline",
             baselineWorkloadIdentity,
             baseline,
+            captureSettings,
             cancellationToken).ConfigureAwait(false);
         var currentObservation = await CaptureWithLedgerAsync(
             client,
@@ -165,6 +189,7 @@ public static class AllocationDirectionalLive
             $"{pairId}-current",
             currentWorkloadIdentity,
             current,
+            captureSettings,
             cancellationToken).ConfigureAwait(false);
         return new(
             pairId,
@@ -180,6 +205,7 @@ public static class AllocationDirectionalLive
         string attemptId,
         string workloadIdentity,
         AllocationDirectionalPlannedSide workload,
+        AllocationDirectionalCaptureSettings captureSettings,
         CancellationToken cancellationToken)
     {
         AllocationDirectionalLedger.AppendStarted(
@@ -191,6 +217,7 @@ public static class AllocationDirectionalLive
             attemptId,
             workloadIdentity,
             workload,
+            captureSettings,
             cancellationToken).ConfigureAwait(false);
         AllocationDirectionalLedger.AppendCompleted(
             ledgerPath,
@@ -925,6 +952,58 @@ public sealed class AllocationDirectionalReportTests
             fixture.Pairs.Should().OnlyContain(pair =>
                 pair.Baseline.AttemptId != pair.Current.AttemptId);
             var report = AllocationDirectionalV3Harness.Evaluate(fixture);
+            using var reportStream = new FileStream(
+                reportPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None);
+            using var writer = new StreamWriter(reportStream);
+            writer.Write(AllocationDirectionalJson.SerializeReport(report));
+        }
+    }
+
+    [Collection(ScenarioEvaluationLiveGroup.Name)]
+    public sealed class AllocationDirectionalV4LiveTests
+    {
+        [EnvironmentRequiredFact(
+            AllocationDirectionalEnvironmentVariables.V4FixturePath,
+            "The frozen one-time allocation directional v4 fixture capture requires an explicit output path.",
+            Timeout = 7_200_000)]
+        [Trait("Category", "ScenarioEvaluationLive")]
+        public async Task FrozenRealMcpV4Capture_WritesEveryAttemptOnce()
+        {
+            var fixturePath = Environment.GetEnvironmentVariable(
+                AllocationDirectionalEnvironmentVariables.V4FixturePath)
+                ?? throw new InvalidOperationException(
+                    "The frozen v4 fixture path was not configured.");
+            fixturePath.Should().NotBeNullOrWhiteSpace();
+            var ledgerPath = System.IO.Path.ChangeExtension(
+                fixturePath,
+                ".ledger.jsonl");
+            var reportPath = System.IO.Path.ChangeExtension(
+                fixturePath,
+                ".report.json");
+            File.Exists(fixturePath).Should().BeFalse(
+                "the frozen v4 fixture must not overwrite or retry an earlier execution");
+            File.Exists(ledgerPath).Should().BeFalse(
+                "a v4 ledger proves a prior partial or complete execution already started");
+            File.Exists(reportPath).Should().BeFalse(
+                "the frozen v4 report must not overwrite an earlier execution");
+
+            var fixture = await AllocationDirectionalLive.CaptureV4Async(
+                ledgerPath,
+                CancellationToken.None);
+            AllocationDirectionalJson.WriteFixture(fixturePath, fixture);
+
+            fixture.Pairs.Should().HaveCount(
+                AllocationDirectionalV4CapturePlan.TotalPairs);
+            fixture.Pairs.SelectMany(pair => new[] { pair.Baseline, pair.Current })
+                .Count(observation =>
+                    observation.Origin == AllocationDirectionalOrigin.LiveMcp)
+                .Should().Be(AllocationDirectionalV4CapturePlan.LiveMcpSides);
+            fixture.Pairs.Should().OnlyContain(pair =>
+                pair.Baseline.AttemptId != pair.Current.AttemptId);
+            var report = AllocationDirectionalV4Harness.Evaluate(fixture);
             using var reportStream = new FileStream(
                 reportPath,
                 FileMode.CreateNew,
