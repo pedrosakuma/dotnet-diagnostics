@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-throughput-normalization-falsifier",
+  "protocolVersion": "2.0.0",
+  "decision": "noGo",
+  "attemptedPairs": 25,
+  "attemptedSides": 50,
+  "passedSides": 50,
+  "failedOrAbortedSides": 0,
+  "maximumObservedAllocationEvents": 53109,
+  "healthyUnchangedRateControl": {
+    "assessable": true,
+    "withinPracticalSanity": true,
+    "aaEnvelope": 0.0217881395794942594854820159,
+    "absoluteRelativeDeltas": {
+      "pairCount": 5,
+      "median": 0.0114224805694159492248141572,
+      "medianAbsoluteDeviation": 0.0070333438819750065991700926,
+      "outlierIndexes": [],
+      "inliers": [
+        0.0043891366874409426256440646,
+        0.0207867425400362458819070342,
+        0.0093120190160900444770515864,
+        0.0114224805694159492248141572,
+        0.0217881395794942594854820159
+      ],
+      "hasRequiredPairs": true,
+      "hasRequiredInliers": true
+    },
+    "abstentionReason": null
+  },
+  "cohorts": [
+    {
+      "cohortId": "primary-every-operation",
+      "operationIdentity": "PrimaryOperation",
+      "baselineShape": "primary-paced",
+      "currentShape": "primary",
+      "baselinePauseMilliseconds": 1,
+      "baselinePauseEveryOperations": 1,
+      "assessable": true,
+      "workloadManipulationEstablished": true,
+      "normalizedQuantityEquivalent": false,
+      "medianExceedsEquivalenceMargin": true,
+      "inlierMedianAbsoluteRelativeDelta": 0.3285919981920796129042574579,
+      "aaEnvelope": 0.0985915492957746478873239436,
+      "equivalenceMargin": 0.10,
+      "throughputMultipliers": {
+        "pairCount": 5,
+        "median": 63,
+        "medianAbsoluteDeviation": 1.646153846153846153846153846,
+        "outlierIndexes": [],
+        "inliers": [
+          65,
+          58.208333333333333333333333333,
+          63,
+          64.646153846153846153846153846,
+          62.716417910447761194029850746
+        ],
+        "hasRequiredPairs": true,
+        "hasRequiredInliers": true
+      },
+      "effectAbsoluteRelativeDeltas": {
+        "pairCount": 5,
+        "median": 0.3376836364572481390734454587,
+        "medianAbsoluteDeviation": 0.0262101391892698097738593824,
+        "outlierIndexes": [
+          1
+        ],
+        "inliers": [
+          0.3376836364572481390734454587,
+          0.3060038372068765278160818354,
+          0.3638937756465179488473048411,
+          0.3195003599269110867350694571
+        ],
+        "hasRequiredPairs": true,
+        "hasRequiredInliers": true
+      },
+      "classification": "normalization-failed",
+      "abstentionReason": "The robust effect summary exceeded the predeclared practical-equivalence margin in estimated sampled bytes per operation."
+    },
+    {
+      "cohortId": "low-every-eight-operations",
+      "operationIdentity": "LowOperation",
+      "baselineShape": "low-bounded-v4",
+      "currentShape": "low",
+      "baselinePauseMilliseconds": 1,
+      "baselinePauseEveryOperations": 8,
+      "assessable": true,
+      "workloadManipulationEstablished": true,
+      "normalizedQuantityEquivalent": false,
+      "medianExceedsEquivalenceMargin": true,
+      "inlierMedianAbsoluteRelativeDelta": 0.1329597469771273875793169367,
+      "aaEnvelope": 0.0645161290322580645161290323,
+      "equivalenceMargin": 0.10,
+      "throughputMultipliers": {
+        "pairCount": 5,
+        "median": 293.40873015873015873015873016,
+        "medianAbsoluteDeviation": 5.80025421626984126984126984,
+        "outlierIndexes": [],
+        "inliers": [
+          293.40873015873015873015873016,
+          299.208984375,
+          282.80037313432835820895522388,
+          292.775,
+          315.56547619047619047619047619
+        ],
+        "hasRequiredPairs": true,
+        "hasRequiredInliers": true
+      },
+      "effectAbsoluteRelativeDeltas": {
+        "pairCount": 5,
+        "median": 0.1329597469771273875793169367,
+        "medianAbsoluteDeviation": 0.0130012354376507473998381814,
+        "outlierIndexes": [],
+        "inliers": [
+          0.1388269934320095987373265748,
+          0.1199585115394766401794787553,
+          0.0892132853443047645764424432,
+          0.1595142534867462296568088499,
+          0.1329597469771273875793169367
+        ],
+        "hasRequiredPairs": true,
+        "hasRequiredInliers": true
+      },
+      "classification": "normalization-failed",
+      "abstentionReason": "The robust effect summary exceeded the predeclared practical-equivalence margin in estimated sampled bytes per operation."
+    }
+  ],
+  "blindedEvaluationRan": false,
+  "limitations": [
+    "This focused falsifier evaluates only estimated sampled bytes per logical operation under throughput-only pacing manipulation.",
+    "Every A/A, effect, and healthy-control cell has five independently started pairs, pair-first median/raw MAD summaries, retained outliers, and a minimum of four inliers.",
+    "The practical equivalence margin is max(workload-specific robust A/A envelope, 10%).",
+    "Operations per second proves only the manipulation. Sampled bytes per second and allocation-event counts remain descriptive provenance.",
+    "GCAllocationTick estimated bytes are fixed-stride sampled weights, not exact allocated bytes, retained bytes, object counts, severity, health, regression, or causality.",
+    "Every side is a separately started process captured once through repository-built MCP over real stdio. Failures and aborts remain in denominators without retry or replacement.",
+    "No blinded evaluation, weighted score, post-execution threshold tuning, product implementation, or downstream design issue is authorized by this protocol."
+  ]
+}
