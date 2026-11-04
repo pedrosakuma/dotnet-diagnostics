@@ -422,3 +422,294 @@ internal static class AllocationDirectionalV3CapturePlan
             retainedBytes,
             driveWorkload);
 }
+
+internal static class AllocationDirectionalV4CapturePlan
+{
+    public const int CaptureDurationSeconds = 1;
+    public const int ArmDelayMilliseconds = 200;
+    public const int WorkloadMilliseconds = 700;
+    public const int DefaultWarmupMilliseconds = 180;
+    public const int TopN = AllocationDirectionalBounds.MaximumRankedRows;
+    public const int AttemptTimeoutSeconds = 30;
+    public const int McpCompletionTimeoutSeconds = 15;
+    public const long AllocationEventOperatingLimit =
+        AllocationDirectionalBoundedCalibrationPlan.AllocationEventOperatingLimit;
+
+    public static AllocationDirectionalCaptureSettings CaptureSettings { get; } =
+        new(
+            CaptureDurationSeconds,
+            ArmDelayMilliseconds,
+            WorkloadMilliseconds,
+            TopN,
+            AttemptTimeoutSeconds,
+            McpCompletionTimeoutSeconds);
+
+    public static int LiveMcpPairs =>
+        Entries.Count * AllocationDirectionalBounds.RequiredPairs;
+
+    public static int LiveMcpSides => LiveMcpPairs * 2;
+
+    public static int ControlledProjectionPairs =>
+        AllocationDirectionalBounds.RequiredPairs;
+
+    public static int ControlledProjectionSides => ControlledProjectionPairs * 2;
+
+    public static int TotalPairs => LiveMcpPairs + ControlledProjectionPairs;
+
+    public static IReadOnlyDictionary<string, string> RuntimeEnvironment { get; } =
+        AllocationDirectionalV3CapturePlan.RuntimeEnvironment;
+
+    public static IReadOnlyList<AllocationDirectionalPlanEntry> Entries { get; } =
+    [
+        Entry(
+            AllocationDirectionalScenario.HealthyAa,
+            "final-v4-healthy-aa",
+            "same-workload",
+            Side("final-healthy-primary-v4", "primary", "steady", 288_000),
+            Side("final-healthy-primary-v4", "primary", "aa", 288_000)),
+        Entry(
+            AllocationDirectionalScenario.MixShiftStableTotal,
+            "final-v4-mix-aa",
+            "same-workload",
+            Side("final-equal-payload-mix-v4", "primary", "steady", 288_000),
+            Side("final-equal-payload-mix-v4", "primary", "aa", 288_000)),
+        Entry(
+            AllocationDirectionalScenario.MixShiftStableTotal,
+            "final-v4-mix-effect",
+            "allocation-mix",
+            Side("final-equal-payload-mix-v4", "primary", "steady", 288_000),
+            Side("final-equal-payload-mix-v4", "changed", "effect", 288_000)),
+        Entry(
+            AllocationDirectionalScenario.ThroughputIncreaseStablePerOperation,
+            "final-v4-throughput-aa",
+            "same-load",
+            Side(
+                "final-primary-throughput-v4",
+                "primary-paced",
+                "steady",
+                288_000),
+            Side(
+                "final-primary-throughput-v4",
+                "primary-paced",
+                "aa",
+                288_000)),
+        Entry(
+            AllocationDirectionalScenario.ThroughputIncreaseStablePerOperation,
+            "final-v4-throughput-effect",
+            "explicit-pacing",
+            Side(
+                "final-primary-throughput-v4",
+                "primary-paced",
+                "steady",
+                288_000),
+            Side("final-primary-throughput-v4", "primary", "effect", 288_000)),
+        Entry(
+            AllocationDirectionalScenario.WarmupTransientConverges,
+            "final-v4-warmup-aa",
+            "same-workload",
+            Side(
+                "final-warmup-transient-v4",
+                "warmup-transient",
+                "steady",
+                288_000),
+            Side(
+                "final-warmup-transient-v4",
+                "warmup-transient",
+                "aa",
+                288_000)),
+        Entry(
+            AllocationDirectionalScenario.WarmupTransientConverges,
+            "final-v4-warmup-early",
+            "phase",
+            Side(
+                "final-warmup-transient-v4",
+                "warmup-transient",
+                "steady",
+                288_000),
+            Side(
+                "final-warmup-transient-v4",
+                "warmup-transient",
+                "early",
+                288_000,
+                warmupMilliseconds: 0)),
+        Entry(
+            AllocationDirectionalScenario.WarmupTransientConverges,
+            "final-v4-warmup-converged",
+            "phase",
+            Side(
+                "final-warmup-transient-v4",
+                "warmup-transient",
+                "steady",
+                288_000),
+            Side(
+                "final-warmup-transient-v4",
+                "warmup-transient",
+                "converged",
+                288_000)),
+        Entry(
+            AllocationDirectionalScenario.TrueIncrease,
+            "final-v4-increase-aa",
+            "same-workload",
+            Side(
+                "final-bounded-allocation-volume-v4",
+                "low-bounded-v4",
+                "steady",
+                64_000),
+            Side(
+                "final-bounded-allocation-volume-v4",
+                "low-bounded-v4",
+                "aa",
+                64_000)),
+        Entry(
+            AllocationDirectionalScenario.TrueIncrease,
+            "final-v4-increase-effect",
+            "allocation-volume",
+            Side(
+                "final-bounded-allocation-volume-v4",
+                "low-bounded-v4",
+                "steady",
+                64_000),
+            Side(
+                "final-bounded-allocation-volume-v4",
+                "increased-bounded-v4",
+                "effect",
+                576_000)),
+        Entry(
+            AllocationDirectionalScenario.LowerAllocationStableRetained,
+            "final-v4-lower-aa",
+            "same-workload",
+            Side(
+                "final-bounded-retained-volume-v4",
+                "increased-bounded-v4",
+                "steady",
+                576_000,
+                retainedBytes: 2 * 1024 * 1024),
+            Side(
+                "final-bounded-retained-volume-v4",
+                "increased-bounded-v4",
+                "aa",
+                576_000,
+                retainedBytes: 2 * 1024 * 1024)),
+        Entry(
+            AllocationDirectionalScenario.LowerAllocationStableRetained,
+            "final-v4-lower-effect",
+            "allocation-volume",
+            Side(
+                "final-bounded-retained-volume-v4",
+                "increased-bounded-v4",
+                "steady",
+                576_000,
+                retainedBytes: 2 * 1024 * 1024),
+            Side(
+                "final-bounded-retained-volume-v4",
+                "low-bounded-v4",
+                "effect",
+                64_000,
+                retainedBytes: 2 * 1024 * 1024)),
+        Entry(
+            AllocationDirectionalScenario.ChangedWorkload,
+            "final-v4-changed-workload",
+            "workload-identity",
+            Side("final-request-mix-a-v4", "primary", "steady", 288_000),
+            Side("final-request-mix-b-v4", "changed", "effect", 288_000)),
+        Entry(
+            AllocationDirectionalScenario.FixedStrideBias,
+            "final-v4-stride-a-aa",
+            "same-order-periodic-a",
+            Side(
+                "final-bounded-order-a-v4",
+                "periodic-a-bounded-v4",
+                "steady",
+                192_000),
+            Side(
+                "final-bounded-order-a-v4",
+                "periodic-a-bounded-v4",
+                "aa",
+                192_000)),
+        Entry(
+            AllocationDirectionalScenario.FixedStrideBias,
+            "final-v4-stride-b-aa",
+            "same-order-periodic-b",
+            Side(
+                "final-bounded-order-b-v4",
+                "periodic-b-bounded-v4",
+                "steady",
+                192_000),
+            Side(
+                "final-bounded-order-b-v4",
+                "periodic-b-bounded-v4",
+                "aa",
+                192_000)),
+        Entry(
+            AllocationDirectionalScenario.FixedStrideBias,
+            "final-v4-stride-a-to-b",
+            "allocation-order-a-to-b",
+            Side(
+                "final-bounded-reorder-v4",
+                "periodic-a-bounded-v4",
+                "steady",
+                192_000),
+            Side(
+                "final-bounded-reorder-v4",
+                "periodic-b-bounded-v4",
+                "effect",
+                192_000)),
+        Entry(
+            AllocationDirectionalScenario.FixedStrideBias,
+            "final-v4-stride-b-to-a",
+            "allocation-order-b-to-a",
+            Side(
+                "final-bounded-reorder-v4",
+                "periodic-b-bounded-v4",
+                "steady",
+                192_000),
+            Side(
+                "final-bounded-reorder-v4",
+                "periodic-a-bounded-v4",
+                "effect",
+                192_000)),
+        Entry(
+            AllocationDirectionalScenario.MissingOrZeroWeight,
+            "final-v4-missing-denominator",
+            "availability",
+            Side(
+                "final-missing-denominator-v4",
+                "primary",
+                "steady",
+                288_000),
+            Side(
+                "final-missing-denominator-v4",
+                "primary",
+                "missing",
+                0,
+                workers: 0,
+                driveWorkload: false)),
+    ];
+
+    private static AllocationDirectionalPlanEntry Entry(
+        AllocationDirectionalScenario scenario,
+        string pairPrefix,
+        string comparisonAxis,
+        AllocationDirectionalPlannedSide baseline,
+        AllocationDirectionalPlannedSide current)
+        => new(scenario, pairPrefix, comparisonAxis, baseline, current);
+
+    private static AllocationDirectionalPlannedSide Side(
+        string workloadIdentity,
+        string shape,
+        string phase,
+        long expectedPayloadBytesPerOperation,
+        int workers = 1,
+        int warmupMilliseconds = DefaultWarmupMilliseconds,
+        int retainedBytes = 0,
+        bool driveWorkload = true)
+        => new(
+            workloadIdentity,
+            shape,
+            workers,
+            phase,
+            expectedPayloadBytesPerOperation,
+            warmupMilliseconds,
+            retainedBytes,
+            driveWorkload);
+}
