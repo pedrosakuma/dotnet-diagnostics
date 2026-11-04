@@ -1,0 +1,3013 @@
+{
+  "schemaVersion": 1,
+  "protocolId": "allocation-throughput-normalization-falsifier",
+  "protocolVersion": "1.0.0",
+  "protocolSha256": "899c834399cd26b1068a867d2f48be569fdf586f21bb900eb75d8d6571630df5",
+  "canonicalProtocolSha256": "899c834399cd26b1068a867d2f48be569fdf586f21bb900eb75d8d6571630df5",
+  "provenanceCorrections": [],
+  "frozenAtUtc": "2026-11-04T15:27:03.4363363\u002B00:00",
+  "sourceBaseCommit": "56c2ef4a9eb296beb1f64d33b8f47ccf693250a3",
+  "environment": "Microsoft Windows 10.0.26300; 10.0.14; X64",
+  "pairs": [
+    {
+      "pairId": "throughput-v1-primary-aa-01",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "primary-every-operation-aa",
+      "baseline": {
+        "attemptId": "throughput-v1-primary-aa-01-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 174,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 4609152,
+        "sampledAllocationTicks": 24,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 3072768,
+            "allocationTicks": 16
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 1536384,
+            "allocationTicks": 8
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 3072768,
+            "allocationTicks": 16
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 1536384,
+            "allocationTicks": 8
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-aa-01-baseline",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "23cfb3d1dbf8e8e9cd584a2ed5478a0969b98ba35a25c729c3326510a6b637e7",
+            "byteCount": 5613,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-aa-01-baseline",
+        "processIdentity": "pid-24176-started-20261104T1527204005863Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 174,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-primary-aa-01-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 65,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 10562640,
+        "sampledAllocationTicks": 55,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7105776,
+            "allocationTicks": 37
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 3456864,
+            "allocationTicks": 18
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7105776,
+            "allocationTicks": 37
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 3456864,
+            "allocationTicks": 18
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-aa-01-current",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "9c58f723379c8ed1360c5226c50c44346e276fe69b4a6dfdf5f72ba4b981db84",
+            "byteCount": 5619,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-aa-01-current",
+        "processIdentity": "pid-22344-started-20261104T1527242081798Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 65,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-primary-aa-02",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "primary-every-operation-aa",
+      "baseline": {
+        "attemptId": "throughput-v1-primary-aa-02-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 70,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 10946736,
+        "sampledAllocationTicks": 57,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7297824,
+            "allocationTicks": 38
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 3648912,
+            "allocationTicks": 19
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7297824,
+            "allocationTicks": 38
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 3648912,
+            "allocationTicks": 19
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-aa-02-baseline",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "8e27f2e209baeb47250be649eec82a7354ed5f1507f48d7f68581892db386f3b",
+            "byteCount": 5620,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-aa-02-baseline",
+        "processIdentity": "pid-38588-started-20261104T1527267254202Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 70,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-primary-aa-02-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 64,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 11054632,
+        "sampledAllocationTicks": 58,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7297824,
+            "allocationTicks": 38
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 3648912,
+            "allocationTicks": 19
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 107896,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7297824,
+            "allocationTicks": 38
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 3648912,
+            "allocationTicks": 19
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 107896,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-aa-02-current",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "41e1ba844ddad05a36a53d94612a014241b48f7ba21bb8f76716e2c202f0bba4",
+            "byteCount": 6637,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-aa-02-current",
+        "processIdentity": "pid-38252-started-20261104T1527292130432Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 64,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-primary-aa-03",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "primary-every-operation-aa",
+      "baseline": {
+        "attemptId": "throughput-v1-primary-aa-03-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 63,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 10562640,
+        "sampledAllocationTicks": 55,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7105776,
+            "allocationTicks": 37
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 3456864,
+            "allocationTicks": 18
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7105776,
+            "allocationTicks": 37
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 3456864,
+            "allocationTicks": 18
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-aa-03-baseline",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "ce8977172c2f7d4e611d84ec8a9a3680b1bb5e856d70b62ef8246b5a82e09c7c",
+            "byteCount": 5620,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-aa-03-baseline",
+        "processIdentity": "pid-45236-started-20261104T1527316632937Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 63,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-primary-aa-03-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 68,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 11522880,
+        "sampledAllocationTicks": 60,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7681920,
+            "allocationTicks": 40
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 3840960,
+            "allocationTicks": 20
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7681920,
+            "allocationTicks": 40
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 3840960,
+            "allocationTicks": 20
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-aa-03-current",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "51dd6db62517df45c87ec7713e1f00e4bc30d72a44a3fe63457d0d1d58e90414",
+            "byteCount": 5620,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-aa-03-current",
+        "processIdentity": "pid-45952-started-20261104T1527341019368Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 68,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-primary-effect-01",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "primary-every-operation-effect",
+      "baseline": {
+        "attemptId": "throughput-v1-primary-effect-01-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 68,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 12014872,
+        "sampledAllocationTicks": 63,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7873968,
+            "allocationTicks": 41
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 4033008,
+            "allocationTicks": 21
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 107896,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7873968,
+            "allocationTicks": 41
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 4033008,
+            "allocationTicks": 21
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 107896,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-effect-01-baseline",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "bf79ac6fc32bb450a89776c6b7b030c00cd64cd443f723881ee789f485603d4e",
+            "byteCount": 6641,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-effect-01-baseline",
+        "processIdentity": "pid-39488-started-20261104T1527365710518Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 68,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-primary-effect-01-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary",
+        "phase": "effect",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 3957,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 918554976,
+        "sampledAllocationTicks": 4794,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 610712640,
+            "allocationTicks": 3180
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 305356320,
+            "allocationTicks": 1590
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2486016,
+            "allocationTicks": 24
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 610712640,
+            "allocationTicks": 3180
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 305356320,
+            "allocationTicks": 1590
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2486016,
+            "allocationTicks": 24
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-effect-01-current",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "f5eba94de95b5dff57cf7ce6a4d3df1e3c5a98839004ea919c05d1607d15f7f0",
+            "byteCount": 6695,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-effect-01-current",
+        "processIdentity": "pid-40052-started-20261104T1527390833383Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 3957,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-primary-effect-02",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "primary-every-operation-effect",
+      "baseline": {
+        "attemptId": "throughput-v1-primary-effect-02-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 63,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 11055496,
+        "sampledAllocationTicks": 58,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7297824,
+            "allocationTicks": 38
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 3648912,
+            "allocationTicks": 19
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 108760,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7297824,
+            "allocationTicks": 38
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 3648912,
+            "allocationTicks": 19
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 108760,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-effect-02-baseline",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "b9342c2a89f9d89f788a864bae5a86f49e04b897dee2311adb2fc5382485e093",
+            "byteCount": 6637,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-effect-02-baseline",
+        "processIdentity": "pid-34840-started-20261104T1527416765201Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 63,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-primary-effect-02-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary",
+        "phase": "effect",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4037,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 931228848,
+        "sampledAllocationTicks": 4860,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 619162752,
+            "allocationTicks": 3224
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 309581376,
+            "allocationTicks": 1612
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2484720,
+            "allocationTicks": 24
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 619162752,
+            "allocationTicks": 3224
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 309581376,
+            "allocationTicks": 1612
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2484720,
+            "allocationTicks": 24
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-effect-02-current",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "cd97dd93a2965115270d010e3d3115d387e63d5d41c97f0da5429f1e46922620",
+            "byteCount": 6696,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-effect-02-current",
+        "processIdentity": "pid-29240-started-20261104T1527441685423Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4037,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-primary-effect-03",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "primary-every-operation-effect",
+      "baseline": {
+        "attemptId": "throughput-v1-primary-effect-03-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary-paced",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 73,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 11522880,
+        "sampledAllocationTicks": 60,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 7681920,
+            "allocationTicks": 40
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 3840960,
+            "allocationTicks": 20
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 7681920,
+            "allocationTicks": 40
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 3840960,
+            "allocationTicks": 20
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-effect-03-baseline",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "4c1889fef31b2276864b0c5e41caedb25751b23ad83612ec367e6dc0e8d7635e",
+            "byteCount": 5616,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-effect-03-baseline",
+        "processIdentity": "pid-6932-started-20261104T1527467228359Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 73,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-primary-effect-03-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-primary-v1",
+        "shape": "primary",
+        "phase": "effect",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4257,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 979064352,
+        "sampledAllocationTicks": 5110,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 650850672,
+            "allocationTicks": 3389
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 325521360,
+            "allocationTicks": 1695
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2692320,
+            "allocationTicks": 26
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 650850672,
+            "allocationTicks": 3389
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 325521360,
+            "allocationTicks": 1695
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2692320,
+            "allocationTicks": 26
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-primary-effect-03-current",
+          "workloadIdentity": "throughput-falsifier-primary-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "145bbf920d57be134315805234b72bb349a163e17774600ccb70d6c001124cb1",
+            "byteCount": 6697,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-primary-effect-03-current",
+        "processIdentity": "pid-38768-started-20261104T1527492093016Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4257,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-low-aa-01",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "low-every-eight-operations-aa",
+      "baseline": {
+        "attemptId": "throughput-v1-low-aa-01-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 568,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 20015776,
+        "sampledAllocationTicks": 157,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 14939584,
+            "allocationTicks": 117
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 4867648,
+            "allocationTicks": 38
+          },
+          {
+            "key": "System.String",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          },
+          {
+            "key": "\u003C\u003Ef__AnonymousType0\u00607[System.String,System.Int64,System.Int32,System.Int64,System.Int32,System.Int64,System.Int64]",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 14939584,
+            "allocationTicks": 117
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 4867648,
+            "allocationTicks": 38
+          },
+          {
+            "key": "System.DateTimeFormat.Format(value class System.DateTime,class System.String,class System.IFormatProvider,value class System.TimeSpan)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.Run(value class System.TimeSpan,class System.Func\u00601\u003Cint32\u003E,class System.String,int32,int32,int32)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-aa-01-baseline",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "ed50b7eefb2ade4fc5bb862378025d631c5bc477f30ab7941089aed96a116a34",
+            "byteCount": 8604,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-aa-01-baseline",
+        "processIdentity": "pid-27968-started-20261104T1527517584256Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 568,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-low-aa-01-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 528,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 20039600,
+        "sampledAllocationTicks": 157,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 12505760,
+            "allocationTicks": 98
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 7533840,
+            "allocationTicks": 59
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 12505760,
+            "allocationTicks": 98
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 7533840,
+            "allocationTicks": 59
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-aa-01-current",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "0195cade1ada1914d63181bb232f40951b05a9aadee6195dd8d05d08fe296837",
+            "byteCount": 5603,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-aa-01-current",
+        "processIdentity": "pid-34128-started-20261104T1527542082612Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 528,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-low-aa-02",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "low-every-eight-operations-aa",
+      "baseline": {
+        "attemptId": "throughput-v1-low-aa-02-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 504,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 20039600,
+        "sampledAllocationTicks": 157,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 12377664,
+            "allocationTicks": 97
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 7661936,
+            "allocationTicks": 60
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 12377664,
+            "allocationTicks": 97
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 7661936,
+            "allocationTicks": 60
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-aa-02-baseline",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "76e6a8bd9e5679d5372782068c0a859a08d10ea024c9246152de249768acbcac",
+            "byteCount": 5601,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-aa-02-baseline",
+        "processIdentity": "pid-7060-started-20261104T1527566628495Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 504,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-low-aa-02-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 504,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 19014832,
+        "sampledAllocationTicks": 149,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 9967664,
+            "allocationTicks": 78
+          },
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 9047168,
+            "allocationTicks": 71
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 9967664,
+            "allocationTicks": 78
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 8942896,
+            "allocationTicks": 70
+          },
+          {
+            "key": "System.Diagnostics.Tracing.EventProviderImpl.MarshalFilterData(value class EVENT_FILTER_DESCRIPTOR*,value class System.Diagnostics.Tracing.ControllerCommand\u0026,unsigned int8[]\u0026)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-aa-02-current",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "a53863112ff3e59a77d9a06b534649ff7a957ef3d59511a99d0dab839169d896",
+            "byteCount": 6519,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-aa-02-current",
+        "processIdentity": "pid-36996-started-20261104T1527591289090Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 504,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-low-aa-03",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "low-every-eight-operations-aa",
+      "baseline": {
+        "attemptId": "throughput-v1-low-aa-03-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 504,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 20039600,
+        "sampledAllocationTicks": 157,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 11993376,
+            "allocationTicks": 94
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 7941952,
+            "allocationTicks": 62
+          },
+          {
+            "key": "System.String",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 11993376,
+            "allocationTicks": 94
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 7941952,
+            "allocationTicks": 62
+          },
+          {
+            "key": "System.DateTimeFormat.Format(value class System.DateTime,class System.String,class System.IFormatProvider,value class System.TimeSpan)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-aa-03-baseline",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "cfb7996eb8be19aa91e2877c54a3d69ce24b5be8baf3c0abc9e2433d5e010da7",
+            "byteCount": 6739,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-aa-03-baseline",
+        "processIdentity": "pid-7012-started-20261104T1528015739051Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 504,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-low-aa-03-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 504,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 19014832,
+        "sampledAllocationTicks": 149,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 10328128,
+            "allocationTicks": 81
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 8686704,
+            "allocationTicks": 68
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 10328128,
+            "allocationTicks": 81
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 8686704,
+            "allocationTicks": 68
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-aa-03-current",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "d8cb36e12c01426a505b8121911f14c2172b5d5373bfe3ca8a3e9c32707c9124",
+            "byteCount": 5605,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-aa-03-current",
+        "processIdentity": "pid-38144-started-20261104T1528040350776Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 504,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-low-effect-01",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "low-every-eight-operations-effect",
+      "baseline": {
+        "attemptId": "throughput-v1-low-effect-01-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 512,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 20039600,
+        "sampledAllocationTicks": 157,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 13041968,
+            "allocationTicks": 102
+          },
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 6893360,
+            "allocationTicks": 54
+          },
+          {
+            "key": "System.String",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 13041968,
+            "allocationTicks": 102
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 6789088,
+            "allocationTicks": 53
+          },
+          {
+            "key": "System.Diagnostics.Tracing.EventProviderImpl.MarshalFilterData(value class EVENT_FILTER_DESCRIPTOR*,value class System.Diagnostics.Tracing.ControllerCommand\u0026,unsigned int8[]\u0026)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          },
+          {
+            "key": "System.DateTimeFormat.Format(value class System.DateTime,class System.String,class System.IFormatProvider,value class System.TimeSpan)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-effect-01-baseline",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "0894aa4919df3f0f21a28edd7f40393dc9b0624547db79450db4892f2118ed81",
+            "byteCount": 7669,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-effect-01-baseline",
+        "processIdentity": "pid-42272-started-20261104T1528064910325Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 512,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-low-effect-01-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low",
+        "phase": "effect",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 136312,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 5878253968,
+        "sampledAllocationTicks": 45890,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 5868694416,
+            "allocationTicks": 45815
+          },
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 9559552,
+            "allocationTicks": 75
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 5868694416,
+            "allocationTicks": 45815
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 9455280,
+            "allocationTicks": 74
+          },
+          {
+            "key": "System.Diagnostics.Tracing.EventProviderImpl.MarshalFilterData(value class EVENT_FILTER_DESCRIPTOR*,value class System.Diagnostics.Tracing.ControllerCommand\u0026,unsigned int8[]\u0026)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-effect-01-current",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "707046e09661c9f386ce97b511bf0cdbd80526acc14ed1f0af1eb25da0fd1c46",
+            "byteCount": 6569,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-effect-01-current",
+        "processIdentity": "pid-7240-started-20261104T1528089608283Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 136312,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-low-effect-02",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "low-every-eight-operations-effect",
+      "baseline": {
+        "attemptId": "throughput-v1-low-effect-02-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 512,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 19527216,
+        "sampledAllocationTicks": 153,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 12890048,
+            "allocationTicks": 101
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 6637168,
+            "allocationTicks": 52
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 12890048,
+            "allocationTicks": 101
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 6637168,
+            "allocationTicks": 52
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-effect-02-baseline",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "e7a2709c5d7891fc76211aea86cdcbcef9f007ddc592148f0c0fb247ec68545c",
+            "byteCount": 5603,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-effect-02-baseline",
+        "processIdentity": "pid-26144-started-20261104T1528118525693Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 512,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-low-effect-02-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low",
+        "phase": "effect",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 127671,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 5604897104,
+        "sampledAllocationTicks": 43756,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 5235259696,
+            "allocationTicks": 40870
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 369533136,
+            "allocationTicks": 2885
+          },
+          {
+            "key": "\u003C\u003Ef__AnonymousType0\u00607[System.String,System.Int64,System.Int32,System.Int64,System.Int32,System.Int64,System.Int64]",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 5235259696,
+            "allocationTicks": 40870
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 369533136,
+            "allocationTicks": 2885
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.Run(value class System.TimeSpan,class System.Func\u00601\u003Cint32\u003E,class System.String,int32,int32,int32)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-effect-02-current",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "ddd2523532c35df75ef37ab658bc7dd9f188beebdab5647a705bed7f7beb1c87",
+            "byteCount": 7524,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-effect-02-current",
+        "processIdentity": "pid-16004-started-20261104T1528142934413Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 127671,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-low-effect-03",
+      "scenario": "throughputIncreaseStablePerOperation",
+      "comparisonAxis": "low-every-eight-operations-effect",
+      "baseline": {
+        "attemptId": "throughput-v1-low-effect-03-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low-bounded-v4",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 504,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 19503392,
+        "sampledAllocationTicks": 153,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 11993376,
+            "allocationTicks": 94
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 7405744,
+            "allocationTicks": 58
+          },
+          {
+            "key": "\u003C\u003Ef__AnonymousType0\u00607[System.String,System.Int64,System.Int32,System.Int64,System.Int32,System.Int64,System.Int64]",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 11993376,
+            "allocationTicks": 94
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 7405744,
+            "allocationTicks": 58
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.Run(value class System.TimeSpan,class System.Func\u00601\u003Cint32\u003E,class System.String,int32,int32,int32)",
+            "estimatedBytes": 104272,
+            "allocationTicks": 1
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-effect-03-baseline",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "8feb4877a5cdcff3f2b1700b9030c29f09413e24b0c2d02543d3c9296a578d6a",
+            "byteCount": 7462,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-effect-03-baseline",
+        "processIdentity": "pid-44248-started-20261104T1528172297065Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 504,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-low-effect-03-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-low-v1",
+        "shape": "low",
+        "phase": "effect",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 164895,
+        "requestedPayloadBytesPerOperation": 64000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 6877915152,
+        "sampledAllocationTicks": 53694,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 4190741088,
+            "allocationTicks": 32716
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 2687174064,
+            "allocationTicks": 20978
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowBytes()",
+            "estimatedBytes": 4190741088,
+            "allocationTicks": 32716
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateLowChars()",
+            "estimatedBytes": 2687174064,
+            "allocationTicks": 20978
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-low-effect-03-current",
+          "workloadIdentity": "throughput-falsifier-low-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "2ad8b2d17fc808d7ace771a55ecdc7d2906683ee7fa79c08fa235bdd08a58897",
+            "byteCount": 5675,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-low-effect-03-current",
+        "processIdentity": "pid-27744-started-20261104T1528196940472Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 164895,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-healthy-control-01",
+      "scenario": "healthyAa",
+      "comparisonAxis": "unchanged-rate",
+      "baseline": {
+        "attemptId": "throughput-v1-healthy-control-01-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-healthy-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4334,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 1007487456,
+        "sampledAllocationTicks": 5258,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 669863424,
+            "allocationTicks": 3488
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 334931712,
+            "allocationTicks": 1744
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2692320,
+            "allocationTicks": 26
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 669863424,
+            "allocationTicks": 3488
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 334931712,
+            "allocationTicks": 1744
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2692320,
+            "allocationTicks": 26
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-healthy-control-01-baseline",
+          "workloadIdentity": "throughput-falsifier-healthy-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "02cf3e65d55e0948d95bac939c79c4c11356979a9b929042959c0c3c84de6bee",
+            "byteCount": 6704,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-healthy-control-01-baseline",
+        "processIdentity": "pid-29848-started-20261104T1528226441347Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4334,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-healthy-control-01-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-healthy-v1",
+        "shape": "primary",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4235,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 988473840,
+        "sampledAllocationTicks": 5159,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 657188256,
+            "allocationTicks": 3422
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 328594128,
+            "allocationTicks": 1711
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2691456,
+            "allocationTicks": 26
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 657188256,
+            "allocationTicks": 3422
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 328594128,
+            "allocationTicks": 1711
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2691456,
+            "allocationTicks": 26
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-healthy-control-01-current",
+          "workloadIdentity": "throughput-falsifier-healthy-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "f48df3b965a67b115c99c7591c569d75b889ff5227c9fe0f76df3ac6e859d0e5",
+            "byteCount": 6692,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-healthy-control-01-current",
+        "processIdentity": "pid-2204-started-20261104T1528251636989Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4235,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-healthy-control-02",
+      "scenario": "healthyAa",
+      "comparisonAxis": "unchanged-rate",
+      "baseline": {
+        "attemptId": "throughput-v1-healthy-control-02-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-healthy-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4158,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 953610000,
+        "sampledAllocationTicks": 4977,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 633950448,
+            "allocationTicks": 3301
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 317071248,
+            "allocationTicks": 1651
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2588304,
+            "allocationTicks": 25
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 633950448,
+            "allocationTicks": 3301
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 317071248,
+            "allocationTicks": 1651
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2588304,
+            "allocationTicks": 25
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-healthy-control-02-baseline",
+          "workloadIdentity": "throughput-falsifier-healthy-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "602f80c4889b27a982ba9675092628ce1a55692d1319384f9c9a6a58393a3611",
+            "byteCount": 6695,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-healthy-control-02-baseline",
+        "processIdentity": "pid-38156-started-20261104T1528276478858Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4158,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-healthy-control-02-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-healthy-v1",
+        "shape": "primary",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4246,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 994235712,
+        "sampledAllocationTicks": 5189,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 661029216,
+            "allocationTicks": 3442
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 330514608,
+            "allocationTicks": 1721
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2691888,
+            "allocationTicks": 26
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 661029216,
+            "allocationTicks": 3442
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 330514608,
+            "allocationTicks": 1721
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2691888,
+            "allocationTicks": 26
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-healthy-control-02-current",
+          "workloadIdentity": "throughput-falsifier-healthy-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "fa9654b10a8539cff09873722c8de7c9ff1287b377c5d81dc0ead03d82998b9c",
+            "byteCount": 6697,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-healthy-control-02-current",
+        "processIdentity": "pid-39148-started-20261104T1528301382117Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4246,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    },
+    {
+      "pairId": "throughput-v1-healthy-control-03",
+      "scenario": "healthyAa",
+      "comparisonAxis": "unchanged-rate",
+      "baseline": {
+        "attemptId": "throughput-v1-healthy-control-03-baseline",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-healthy-v1",
+        "shape": "primary",
+        "phase": "steady",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4246,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 979063488,
+        "sampledAllocationTicks": 5110,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 650850672,
+            "allocationTicks": 3389
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 325521360,
+            "allocationTicks": 1695
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2691456,
+            "allocationTicks": 26
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 650850672,
+            "allocationTicks": 3389
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 325521360,
+            "allocationTicks": 1695
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2691456,
+            "allocationTicks": 26
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-healthy-control-03-baseline",
+          "workloadIdentity": "throughput-falsifier-healthy-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "81a85811e0ed2094867be42af40f69e4ff46a1368d04ae9f57c6448983ddae4b",
+            "byteCount": 6697,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-healthy-control-03-baseline",
+        "processIdentity": "pid-40252-started-20261104T1528326339661Z",
+        "comparisonRole": "baseline",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "baseline",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4246,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      },
+      "current": {
+        "attemptId": "throughput-v1-healthy-control-03-current",
+        "outcome": "passed",
+        "origin": "liveMcp",
+        "workloadIdentity": "throughput-falsifier-healthy-v1",
+        "shape": "primary",
+        "phase": "aa",
+        "workers": 1,
+        "captureDurationSeconds": 1,
+        "operations": 4191,
+        "requestedPayloadBytesPerOperation": 288000,
+        "retainedBytes": 0,
+        "sampledEstimatedBytes": 969461520,
+        "sampledAllocationTicks": 5060,
+        "attributionState": "complete",
+        "types": [
+          {
+            "key": "System.Byte[]",
+            "estimatedBytes": 644513088,
+            "allocationTicks": 3356
+          },
+          {
+            "key": "System.Char[]",
+            "estimatedBytes": 322256544,
+            "allocationTicks": 1678
+          },
+          {
+            "key": "System.GCMemoryInfoData",
+            "estimatedBytes": 2691888,
+            "allocationTicks": 26
+          }
+        ],
+        "sites": [
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocatePrimaryBytes()",
+            "estimatedBytes": 644513088,
+            "allocationTicks": 3356
+          },
+          {
+            "key": "BadCodeSample.AllocationShapeWorkload.AllocateSharedChars()",
+            "estimatedBytes": 322256544,
+            "allocationTicks": 1678
+          },
+          {
+            "key": "System.GC.GetGCMemoryInfo(value class System.GCKind)",
+            "estimatedBytes": 2691888,
+            "allocationTicks": 26
+          }
+        ],
+        "failureCategory": null,
+        "provenance": [
+          "Collected once through the repository-built MCP server over real stdio.",
+          "The target process was started independently for this observation and terminated after capture.",
+          "The operation denominator came from the workload response, not from allocation ticks.",
+          "GCAllocationTick events provide fixed-stride sampled weights; ticks are sampler provenance and never object counts."
+        ],
+        "attemptEvidence": {
+          "attemptId": "throughput-v1-healthy-control-03-current",
+          "workloadIdentity": "throughput-falsifier-healthy-v1",
+          "stage": "completed",
+          "operationId": "projection.data.allocation-complete",
+          "failureCategory": null,
+          "isError": false,
+          "schemaIdentity": "collect_sample:data.kind=allocation:data.allocation/v1",
+          "errorKind": null,
+          "errorDetailState": "absent",
+          "errorDetailByteCount": 0,
+          "rawResponse": {
+            "sha256": "297bb0baa914de5d91633e85ff404aed9eda30446857456a3f83e0646a6ee546",
+            "byteCount": 6696,
+            "retentionState": "digestOnly",
+            "truncated": true,
+            "redacted": true
+          },
+          "exceptionType": null,
+          "cleanupState": "succeeded"
+        },
+        "captureId": "capture-throughput-v1-healthy-control-03-current",
+        "processIdentity": "pid-39492-started-20261104T1528351469415Z",
+        "comparisonRole": "current",
+        "quantityEvidence": {
+          "quantity": "estimated sampled allocation bytes",
+          "unit": "estimated sampled bytes",
+          "baselineCurrentSemantics": "current",
+          "denominatorQuantity": "completed workload operations",
+          "denominatorUnit": "operations",
+          "denominatorValue": 4191,
+          "normalization": "estimated sampled bytes divided by completed workload operations",
+          "loadSensitive": false,
+          "availability": "available",
+          "abstentionReason": null,
+          "assumptions": [
+            "Baseline and current are interpreted only when workload identity and normalization semantics are compatible.",
+            "The operation denominator is reported by the controlled workload and is independent of allocation ticks.",
+            "Estimated sampled bytes are fixed-stride EventPipe sampling weights, not exact allocated bytes.",
+            "Type and site inventories have independent availability and are never joined."
+          ]
+        },
+        "typeAvailability": "available",
+        "siteAvailability": "available"
+      }
+    }
+  ]
+}

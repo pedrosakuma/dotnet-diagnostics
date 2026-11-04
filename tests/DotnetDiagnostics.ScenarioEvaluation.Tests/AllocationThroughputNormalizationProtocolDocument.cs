@@ -1,0 +1,291 @@
+using System.Text.Json;
+
+namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
+
+internal static class AllocationThroughputNormalizationProtocolDocument
+{
+    public static JsonElement Build(
+        string status,
+        string? frozenAtUtc,
+        bool includeFrozenHashes)
+    {
+        AllocationThroughputNormalizationCapturePlan.ValidateConstruction();
+        var sourceHashes = includeFrozenHashes
+            ? Hashes(
+                AllocationThroughputNormalizationProtocol.FrozenSourcePaths,
+                canonicalText: true)
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+        var runtimeHashes = includeFrozenHashes
+            ? Hashes(
+                AllocationThroughputNormalizationProtocol
+                    .FrozenRuntimeArtifactPaths,
+                canonicalText: false)
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+        var preservedHashes = Hashes(
+            AllocationThroughputNormalizationProtocol.PreservedArtifactPaths,
+            canonicalText: true);
+        var document = new
+        {
+            schemaVersion = 1,
+            protocolId = AllocationThroughputNormalizationProtocol.ProtocolId,
+            protocolVersion =
+                AllocationThroughputNormalizationProtocol.ProtocolVersion,
+            status,
+            frozenAtUtc,
+            sourceBaseCommit =
+                AllocationThroughputNormalizationProtocol.SourceBaseCommit,
+            prerequisites = new
+            {
+                focusedFalsifierIssue = 1390,
+                preservedFeasibilityIssue = 1389,
+                preservedFeasibilityMerge =
+                    AllocationThroughputNormalizationProtocol.SourceBaseCommit,
+                preservedV3Merge =
+                    AllocationThroughputNormalizationProtocol
+                        .PrerequisiteV3Merge,
+                ledgerSchemaVersion =
+                    AllocationDirectionalLedger.CurrentSchemaVersion,
+                projectorSchema =
+                    AllocationDirectionalProjection.SchemaIdentity,
+                boundedCalibrationVersion =
+                    AllocationDirectionalBoundedCalibrationPlan
+                        .CalibrationVersion,
+            },
+            question = "When allocation bytes, operation code path, payload, worker count, capture geometry, and logical-operation counting remain equal within each pair, does changing only pacing move estimated sampled bytes per logical operation beyond max(workload-specific robust A/A, 10%)?",
+            primaryQuantity =
+                "estimated sampled allocation bytes divided by completed logical operations",
+            primaryUnit = "estimated sampled bytes per logical operation",
+            descriptiveOnly = new[]
+            {
+                "estimated sampled bytes per second",
+                "allocation-event count",
+            },
+            requiredIndependentPairs = AllocationDirectionalBounds.RequiredPairs,
+            inventory = new
+            {
+                cohortCount =
+                    AllocationThroughputNormalizationCapturePlan.Cohorts.Count,
+                aaPairsPerCohort =
+                    AllocationDirectionalBounds.RequiredPairs,
+                effectPairsPerCohort =
+                    AllocationDirectionalBounds.RequiredPairs,
+                healthyUnchangedRatePairs =
+                    AllocationDirectionalBounds.RequiredPairs,
+                totalPairs =
+                    AllocationThroughputNormalizationCapturePlan.TotalPairs,
+                liveMcpSides =
+                    AllocationThroughputNormalizationCapturePlan.LiveMcpSides,
+            },
+            capture = new
+            {
+                transport = "repository-built MCP over real stdio",
+                durationSeconds =
+                    AllocationThroughputNormalizationCapturePlan
+                        .CaptureDurationSeconds,
+                armDelayMilliseconds =
+                    AllocationThroughputNormalizationCapturePlan
+                        .ArmDelayMilliseconds,
+                workloadMilliseconds =
+                    AllocationThroughputNormalizationCapturePlan
+                        .WorkloadMilliseconds,
+                defaultWarmupMilliseconds =
+                    AllocationThroughputNormalizationCapturePlan
+                        .DefaultWarmupMilliseconds,
+                topN = AllocationThroughputNormalizationCapturePlan.TopN,
+                attemptTimeoutSeconds =
+                    AllocationThroughputNormalizationCapturePlan
+                        .AttemptTimeoutSeconds,
+                mcpCompletionTimeoutSeconds =
+                    AllocationThroughputNormalizationCapturePlan
+                        .McpCompletionTimeoutSeconds,
+                maxAllocationEvents =
+                    AllocationDirectionalBoundedCalibrationPlan
+                        .AllocationEventCap,
+                maxAllocationFrames =
+                    AllocationDirectionalBoundedCalibrationPlan
+                        .AllocationFrameCap,
+                allocationEventOperatingLimit =
+                    AllocationThroughputNormalizationCapturePlan
+                        .AllocationEventOperatingLimit,
+                targetRuntimeEnvironment =
+                    AllocationThroughputNormalizationCapturePlan
+                        .RuntimeEnvironment,
+            },
+            selectors = new
+            {
+                pairFirst = true,
+                repeatedPairSummary = "median and raw MAD",
+                outlierRule =
+                    "modified z-score 0.6745*(x-median)/MAD with strict abs(z)>3.5; when MAD is zero, unequal values are candidates",
+                outliersRemainReported = true,
+                minimumValidPairs = AllocationDirectionalBounds.RequiredPairs,
+                minimumInlierPairs =
+                    AllocationDirectionalCalibrationBounds.MinimumInlierPairs,
+                healthyAaMaximumRelativeDelta =
+                    AllocationDirectionalCalibrationBounds
+                        .PracticalRelativeEquivalenceFloor,
+                practicalRelativeFloor =
+                    AllocationDirectionalCalibrationBounds
+                        .PracticalRelativeEquivalenceFloor,
+                equivalenceMargin =
+                    "max(workload-specific robust A/A inlier envelope, 10%)",
+                minimumThroughputMultiplier =
+                    AllocationDirectionalCalibrationBounds
+                        .MinimumThroughputMultiplier,
+                manipulationRule =
+                    "the median and every retained inlier operations/second multiplier must be strictly greater than 1.25x",
+                normalizationSurvivesRule =
+                    "the median and every retained inlier absolute estimated-sampled-bytes/operation delta are at or below the cohort equivalence margin",
+                noGoRule =
+                    "every registered cohort is assessable, establishes throughput, and has an inlier median absolute bytes/operation delta strictly above its equivalence margin",
+                conflictingOrBoundaryRule = "INCONCLUSIVE",
+            },
+            cohorts =
+                AllocationThroughputNormalizationCapturePlan.Cohorts.Select(
+                    cohort => new
+                    {
+                        cohort.CohortId,
+                        cohort.BaselinePacing.OperationIdentity,
+                        baselinePacing = new
+                        {
+                            cohort.BaselinePacing.Shape,
+                            cohort.BaselinePacing.PauseMilliseconds,
+                            cohort.BaselinePacing.PauseEveryOperations,
+                        },
+                        currentPacing = new
+                        {
+                            cohort.CurrentPacing.Shape,
+                            cohort.CurrentPacing.PauseMilliseconds,
+                            cohort.CurrentPacing.PauseEveryOperations,
+                        },
+                        aa = Entry(cohort.AaEntry),
+                        effect = Entry(cohort.EffectEntry),
+                    }).ToArray(),
+            healthyUnchangedRateControl = Entry(
+                AllocationThroughputNormalizationCapturePlan.HealthyControl),
+            equalAllocationInvariant = new
+            {
+                withinEveryPair = new[]
+                {
+                    "workload identity",
+                    "allocation operation identity",
+                    "requested payload bytes per operation",
+                    "worker count",
+                    "capture duration",
+                    "arm delay",
+                    "workload duration",
+                    "warmup",
+                    "retained bytes",
+                    "logical operation counting",
+                },
+                onlyExplicitEffectDifference = "pacing",
+                sourceBackedByFrozenHashes = true,
+            },
+            failurePolicy = "Every predeclared side and pair starts at most once. Failures and aborts remain in denominators. No retry, replacement, deletion, threshold fitting, or reinterpretation is permitted.",
+            errorTaxonomy = new
+            {
+                permissionDenied =
+                    "only evidence-backed diagnostic-endpoint authorization or socket access may use PermissionDenied",
+                resourceLimit =
+                    "retain MCP ResourceLimitExceeded plus allocation.capture.limit",
+                otherFailures =
+                    "retain truthful bounded stage, category, operation identifier, cleanup state, and privacy-safe digest/count evidence",
+                successFallback = "forbidden",
+            },
+            decisionGates = new
+            {
+                noGo =
+                    "complete valid inventory; healthy unchanged-rate control passes; every cohort has at least three valid pairs and two inliers, exceeds 1.25x operations/second, and its inlier median absolute normalized delta exceeds its equivalence margin",
+                normalizationSurvives =
+                    "complete valid inventory; healthy unchanged-rate control passes; every cohort exceeds 1.25x operations/second and remains inclusively within its equivalence margin",
+                inconclusive =
+                    "incomplete inventory, failure or abort, operating-limit breach, failed manipulation, insufficient pairs/inliers, invalid A/A, unresolved equal-allocation or harness validity, boundary/dispersion ambiguity, or conflicting cohorts",
+            },
+            fixedStrideLimitations = new[]
+            {
+                "GCAllocationTick estimated bytes are fixed-stride sampled weights.",
+                "The study can falsify or sustain only directional stability of the normalized sampled quantity under the registered pacing manipulations.",
+                "It cannot establish exact allocation totals, retained memory, object counts, severity, health, regression, or causality.",
+            },
+            boundaries = new
+            {
+                blindedEvaluation = false,
+                weightedScore = false,
+                postExecutionThresholdTuning = false,
+                productImplementation = false,
+                productFormulaOrSchemaChange = false,
+                collectorOrRetentionChange = false,
+                toolOrCatalogChange = false,
+                downstreamDesignIssue = false,
+            },
+            frozenInputs = new
+            {
+                textHashCanonicalization =
+                    AllocationDirectionalProtocol.TextHashCanonicalization,
+                sourceFilesSha256 = sourceHashes,
+                runtimeArtifactsSha256 = runtimeHashes,
+                preservedArtifactsSha256 = preservedHashes,
+            },
+        };
+        return JsonSerializer.SerializeToElement(
+            document,
+            AllocationDirectionalJson.Options);
+    }
+
+    private static object Entry(AllocationDirectionalPlanEntry entry)
+        => new
+        {
+            entry.PairPrefix,
+            entry.ComparisonAxis,
+            baseline = Side(entry.Baseline),
+            current = Side(entry.Current),
+        };
+
+    private static object Side(AllocationDirectionalPlannedSide side)
+        => new
+        {
+            side.WorkloadIdentity,
+            side.Shape,
+            side.Workers,
+            side.Phase,
+            side.ExpectedPayloadBytesPerOperation,
+            side.WarmupMilliseconds,
+            side.RetainedBytes,
+            side.DriveWorkload,
+        };
+
+    private static Dictionary<string, string> Hashes(
+        IReadOnlyList<string> relativePaths,
+        bool canonicalText)
+    {
+        var root = RepositoryRoot();
+        return relativePaths.ToDictionary(
+            path => path,
+            path =>
+            {
+                var absolute = Path.Combine(
+                    root,
+                    path.Replace('/', Path.DirectorySeparatorChar));
+                return canonicalText
+                    ? AllocationDirectionalProtocol.Sha256(absolute)
+                    : AllocationDirectionalProtocol.RawSha256(absolute);
+            },
+            StringComparer.Ordinal);
+    }
+
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null
+               && !File.Exists(Path.Combine(
+                   directory.FullName,
+                   "DotnetDiagnostics.slnx")))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory?.FullName
+            ?? throw new DirectoryNotFoundException(
+                "Could not locate the repository root for the throughput-normalization protocol document.");
+    }
+}
