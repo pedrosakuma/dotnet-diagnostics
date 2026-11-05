@@ -2,6 +2,93 @@
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-11-05
+
+Highlights: **bounded, compatibility-gated statistical evidence for repeated diagnostic
+observations, with explicit quantities, quality limits and abstention instead of performance,
+causal or health verdicts.** The MCP server, standalone CLI, Core library and BenchmarkDotNet
+diagnoser still ship from the same release tag. The VS Code extension changes below are
+versioned and published separately.
+
+### Core
+
+- **Bounded request-latency comparison (#1317, #1327).** Core compares compatible sets of
+  completed-request windows using p50/p95/p99 distributions, candidate-minus-baseline absolute
+  and relative deltas, paired-window median deltas and deterministic whole-window bootstrap
+  intervals. Strict workload, filter, quantity and quality identity prevents unsupported
+  comparisons; censored, incomplete, lost and missing observations remain explicit.
+- **Contention concentration and ThreadPool backlog evidence (#1319, #1323, #1328, #1332,
+  #1353, #1360).** Contention captures can describe bounded top-1/top-3 wait-duration
+  concentration, active-window coverage, wait quantiles and capture-level owner overlap.
+  Counter captures can characterize caller-thresholded queue persistence and worker response
+  across bounded windows. Quantity metadata distinguishes queue items, workers and their rates,
+  while loss, truncation, irregular cadence and insufficient windows force abstention.
+- **Objective retained-growth evidence (#1325, #1333, #1354, #1359).** Exact selected-type
+  retained bytes and instances can be compared across up to eight independent process runs,
+  with signed pair deltas, median/raw MAD and deterministic bootstrap intervals. Versioned
+  workload, phase, observation-opportunity, quantity and unit identity gates repeated pooling;
+  legacy or incompatible pairs retain exact deltas but cannot be combined. Missing bounded
+  rankings never become fabricated zeroes, and the result does not claim a leak or health state.
+- **Allocation reproducibility, GC pressure and CPU hotspot variability (#1324, #1329, #1331,
+  #1334, #1336, #1337).** Core adds bounded multi-capture allocation hotspot stability,
+  scenario-scoped GC-pressure characterization and capture-level CPU hotspot variability.
+  Results preserve independent-capture counts, absolute observations, descriptive dispersion,
+  compatibility, unresolved attribution and quality limits without converting sample shares or
+  scenario shapes into CPU time, causality or performance verdicts.
+- **Allocation failure classification (#1381, #1383).** Allocation sampling now records explicit
+  EventPipe start/session/trace stages and returns `PermissionDenied` only when diagnostic
+  endpoint authorization evidence supports it. Endpoint loss, process exit, unsupported targets,
+  timeout, cancellation, resource limits and internal failures remain distinct, while raw
+  exception details, paths and credentials stay private.
+
+### CLI
+
+- **Statistical evidence through existing workflows.** Human, JSON, saved and protocol-v2 JSONL
+  paths expose the shared Core request-latency, contention-concentration, ThreadPool-backlog,
+  retained-growth, allocation-reproducibility and CPU-hotspot contracts. New offline
+  `gc-pressure --file` analysis evaluates bounded scenario windows without starting a collector.
+- **Explicit capability and compatibility contracts.** Additive protocol capabilities and
+  versioned records preserve old-artifact behavior as unavailable or legacy rather than
+  inventing current units, identities or observations. Repeated evidence remains bounded to
+  separately started captures or distinct process runs.
+
+### MCP server and BenchmarkDotNet
+
+- **Existing-tool statistical projections.** Request latency reuses
+  `compare_to_baseline`; allocation reproducibility and CPU variability reuse retained handles
+  and `query_snapshot`/comparison paths. No MCP tool was added: the maximal/default surface
+  remains 17/13 tools, and capabilities without a truthful MCP collection path remain Core/CLI
+  only.
+- **Verdict-free heap growth (#1352, #1358).** MCP heap-growth queries now return the versioned
+  `dotnet-diagnostics/mcp-heap-growth-observation/v2` projection. It preserves baseline/current
+  totals, bounded type deltas, quality, identities, notes and retention paths while removing the
+  legacy verdict and explicitly limiting the result to a pairwise observation.
+- **Surface boundaries remain explicit.** MCP contention output and BenchmarkDotNet artifacts
+  intentionally omit the CLI-only concentration block; GC-pressure characterization and
+  repeated retained-growth statistics are not presented where their required inputs cannot be
+  collected truthfully.
+
+### Reliability
+
+- **Scheduled scenario evaluation (#1395).** The Windows culture-lookup scenario now has an
+  evidence-backed 150-second budget under a 210-second hosted supervisor. Sample startup
+  readiness has a 10-second minimum while preserving proportional scaling for longer scenarios,
+  preventing cold-start timing variation from failing short scenarios without adding retries.
+- **Evaluation integrity.** Operational MCP assessment validates canonical bounded diagnostics,
+  evaluator replay and evidence provenance before scoring. The allocation-directional research
+  series remains recorded as feasibility/calibration evidence rather than being promoted into an
+  unsupported product verdict.
+
+### VS Code extension (separately versioned)
+
+- Prepared extension 0.6.0 with progressive Area → Evidence → Analysis navigation, an optional
+  symptom-first investigation entry and unchanged direct expert actions (#1289, #1300).
+- Clarified the difference between new captures, lossy redacted exports, retained summaries and
+  new persistent snapshots; export actions never fabricate a reopenable investigation (#1303).
+- Added the incremental retained-memory growth lens backed exclusively by CLI-owned collection,
+  statistics and handle identity, with supported types routed into the canonical heap explorer
+  (#1335).
+
 ## [0.33.0] — 2026-10-28
 
 Highlights: **bounded, capability-gated investigation context and objective comparison for
