@@ -59,10 +59,12 @@ versioned and published separately.
   and `query_snapshot`/comparison paths. No MCP tool was added: the maximal/default surface
   remains 17/13 tools, and capabilities without a truthful MCP collection path remain Core/CLI
   only.
-- **Verdict-free heap growth (#1352, #1358).** MCP heap-growth queries now return the versioned
-  `dotnet-diagnostics/mcp-heap-growth-observation/v2` projection. It preserves baseline/current
-  totals, bounded type deltas, quality, identities, notes and retention paths while removing the
-  legacy verdict and explicitly limiting the result to a pairwise observation.
+- **Breaking MCP heap-growth output change (#1352, #1358).** Consumers of
+  `query_snapshot(view="growth")` must select the
+  `dotnet-diagnostics/mcp-heap-growth-observation/v2` schema and read its baseline/current totals,
+  bounded type deltas, quality, identities, notes and retention paths. The MCP payload no longer
+  contains the legacy `verdict` or Core/CLI-only `objectiveRetainedGrowth` fields, and its summary
+  no longer emits leak/stable wording. The result is explicitly limited to a pairwise observation.
 - **Surface boundaries remain explicit.** MCP contention output and BenchmarkDotNet artifacts
   intentionally omit the CLI-only concentration block; GC-pressure characterization and
   repeated retained-growth statistics are not presented where their required inputs cannot be
@@ -81,13 +83,18 @@ versioned and published separately.
 
 ### VS Code extension (separately versioned)
 
-- Prepared extension 0.6.0 with progressive Area → Evidence → Analysis navigation, an optional
-  symptom-first investigation entry and unchanged direct expert actions (#1289, #1300).
-- Clarified the difference between new captures, lossy redacted exports, retained summaries and
-  new persistent snapshots; export actions never fabricate a reopenable investigation (#1303).
-- Added the incremental retained-memory growth lens backed exclusively by CLI-owned collection,
-  statistics and handle identity, with supported types routed into the canonical heap explorer
-  (#1335).
+- Extension 0.6.0 was tagged independently after `v0.33.0`, carrying the evidence-first
+  memory/CPU flows, bounded investigation lens, heap type-instance navigation and fragmentation
+  projection prepared in #1289.
+- Subsequent **unreleased extension changes** add progressive Area → Evidence → Analysis
+  navigation and an optional symptom-first investigation entry while preserving direct expert
+  actions (#1300).
+- The unreleased capture/export journey clarifies the difference between new captures, lossy
+  redacted exports, retained summaries and new persistent snapshots; export actions never
+  fabricate a reopenable investigation (#1303).
+- The unreleased incremental retained-memory growth lens delegates collection, statistics and
+  handle identity exclusively to the CLI and routes supported types into the canonical heap
+  explorer (#1335).
 
 ## [0.33.0] — 2026-10-28
 
