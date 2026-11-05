@@ -80,7 +80,11 @@ to ten limitation counters (with an explicit omission count). A missing gen2
 signal must be read alongside those quality notes, not interpreted as no GC.
 
 The isolated runner also bounds the **whole subprocess**, including post-test
-teardown, with `--attempt-timeout-seconds` (default 180). Each attempt retains
+teardown, with `--attempt-timeout-seconds` (default 180; the hosted workflow uses
+210 seconds to preserve cleanup and forensic headroom around the longest scenario).
+Each scenario gives sample diagnostic/HTTP readiness at least 10 seconds instead
+of deriving an unusably short startup deadline from a small total runtime budget.
+Each attempt retains
 stdout/stderr, any emitted JSON/TRX, and `.log.process.json` containing the
 owned PID, deadline, exit status, elapsed duration and cleanup outcome. A timeout
 is an environment failure even if xUnit already emitted a passing artifact;

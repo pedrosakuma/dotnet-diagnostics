@@ -15,6 +15,7 @@ namespace DotnetDiagnostics.ScenarioEvaluation.Tests;
 public sealed class ScenarioLiveRunner
 {
     private const int MaxNotes = 20;
+    private static readonly TimeSpan MinimumStartupStageTimeout = TimeSpan.FromSeconds(10);
     internal const CpuSamplingMode CultureLookupSamplingMode = CpuSamplingMode.Os;
 
     public static Task<ScenarioEvidence> CaptureAsync(
@@ -659,8 +660,7 @@ public sealed class ScenarioLiveRunner
 
     private static async Task<LiveSampleProcess> StartSampleAsync(ScenarioManifest manifest)
     {
-        var startupStageTimeout = TimeSpan.FromSeconds(
-            Math.Max(1, manifest.Budget.MaximumRuntimeSeconds / 4.0));
+        var startupStageTimeout = StartupStageTimeout(manifest);
         return await LiveSampleProcess.StartPublishedAsync(
             "BadCodeSample",
             new LiveSampleOptions
@@ -678,6 +678,14 @@ public sealed class ScenarioLiveRunner
                     ["DOTNET_TieredPGO"] = "1",
                 },
             }).ConfigureAwait(false);
+    }
+
+    internal static TimeSpan StartupStageTimeout(ScenarioManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        return TimeSpan.FromSeconds(Math.Max(
+            MinimumStartupStageTimeout.TotalSeconds,
+            manifest.Budget.MaximumRuntimeSeconds / 4.0));
     }
 
     private static HttpClient CreateHttpClient(string baseUrl)
