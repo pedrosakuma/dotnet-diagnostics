@@ -69,7 +69,15 @@ There is no change to the scenario manifest, eight-second
 phase windows, verified HTTP responses, OS provenance, reciprocal ownership
 controls or provider gates.
 
-**Budget update (#929).** The shared budget was later raised from 60 to 120 seconds: Windows controls on the same revision took 64–76 s (two eight-second captures plus symbolication and aggregation) and were all cancelled by the 60-second limit, while Linux trials take about 25 s. Evidence thresholds are unchanged.
+**Budget updates (#929).** The shared budget was first raised from 60 to 120 seconds:
+Windows controls on the same revision took 64–76 s (two eight-second captures plus
+symbolication and aggregation) and were all cancelled by the 60-second limit, while
+Linux trials take about 25 s. Two later Windows nightlies on the same revision each
+completed 9/10 trials, with the same fifth trial completing both capture phases in
+120.81 s and 121.16 s respectively (workflow runs 41826286216 and 42025847725).
+The budget is therefore 150 seconds, with a separate 210-second
+subprocess-supervision deadline for forensics and owned cleanup. There are still no
+retries for environment failures, and evidence thresholds are unchanged.
 
 **Linux restored (#929).** Under the predeclared protocol (10 Linux trials plus 3 Windows controls on one revision, zero retries) the result was Linux 10/10 and Windows 3/3 (workflow run 37074523470), so `linux` was added to the manifest's `supportedLivePlatforms` and to the standard matrix. Hosted Linux runners need `linux-tools-$(uname -r)` and `kernel.perf_event_paranoid=-1`; the workflow provisions both.
 

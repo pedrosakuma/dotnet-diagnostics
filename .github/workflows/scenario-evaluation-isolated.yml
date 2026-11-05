@@ -132,7 +132,7 @@ jobs:
             --scenario "${{ matrix.scenario }}" \
             --repetitions "${{ inputs.repetitions || '10' }}" \
             --max-crash-retries "${{ inputs.max_crash_retries || '1' }}" \
-            --attempt-timeout-seconds 180 \
+            --attempt-timeout-seconds 210 \
             --results-root "artifacts/scenario-evaluation/${{ runner.os }}/${{ matrix.scenario }}"
           runner_exit_code=$?
           echo "runner_exit_code=$runner_exit_code" >> "$GITHUB_OUTPUT"
@@ -287,7 +287,7 @@ jobs:
             --scenario culture-lookup \
             --repetitions "${{ matrix.repetitions }}" \
             --max-crash-retries 0 \
-            --attempt-timeout-seconds 180 \
+            --attempt-timeout-seconds 210 \
             --results-root "artifacts/culture-lookup-reassessment/${{ runner.os }}/culture-lookup" \
             "${extra_args[@]}"
           runner_exit_code=$?
