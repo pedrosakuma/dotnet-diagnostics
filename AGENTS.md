@@ -126,6 +126,15 @@ the build — fix them, do not suppress them globally.
 files reference packages without a `Version` attribute. Add new packages to the central props
 first.
 
+**NuGet publishing is keyless.** `.github/workflows/release.yml` uses NuGet Trusted Publishing
+to exchange GitHub OIDC for a one-hour, single-use API key immediately before upload. Configure
+the nuget.org policy for owner `pedrosakuma`, repository `dotnet-diagnostics`, workflow
+`release.yml`, environment `release`, and nuget.org user `pedrosakuma`. No NuGet API key is stored
+in GitHub. If registry authentication fails after the GitHub Release is attached, dispatch the
+same workflow from `main` with the released version and `publish_existing_nuget=true`; that
+recovery path downloads and pushes the exact `.nupkg` bytes already attached to the release
+rather than rebuilding the tag.
+
 ### Local Docker sidecar (matches K8s topology)
 
 See [`docs/local-docker-sidecar.md`](./docs/local-docker-sidecar.md) for the canonical CoreClrSample
