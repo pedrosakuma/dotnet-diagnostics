@@ -160,7 +160,21 @@ public sealed class ThresholdGatedCaptureCollector : IThresholdGatedCaptureColle
             }
         }
 
-        var samplerTask = Task.Run(() => _sampler.SampleAsync(processId, predicate.Metric, sampleInterval, OnSample, armedCts.Token), CancellationToken.None);
+        Task samplerTask;
+        try
+        {
+            samplerTask = _sampler.SampleAsync(
+                processId,
+                predicate.Metric,
+                sampleInterval,
+                OnSample,
+                armedCts.Token);
+        }
+        catch (Exception ex)
+        {
+            samplerTask = Task.FromException(ex);
+        }
+
         var pumpTask = CapturePumpAsync();
         var exitTask = ExitWatchAsync();
         var windowTask = Task.Delay(window, CancellationToken.None);
