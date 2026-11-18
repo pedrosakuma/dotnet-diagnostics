@@ -4502,7 +4502,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #eventsQuality, #eventsStatus { color:var(--vscode-descriptionForeground); margin:.5rem 0; }
     #monitoringLive .monitoring-time-controls { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin:.5rem 0; }
     #monitoringLive .monitoring-time-controls > p, #monitoringLive .monitoring-time-controls > details { flex-basis:100%; margin:.2rem 0; overflow-wrap:anywhere; }
-    #monitoringLive .monitoring-time-controls details label { display:flex; flex-wrap:wrap; gap:.4rem; margin:.4rem 0; }
+    #monitoringLive .monitoring-time-details details label { display:flex; flex-wrap:wrap; gap:.4rem; margin:.4rem 0; }
+    #monitoringLive .monitoring-time-scope { margin:.8rem 0 1rem; }
+    #monitoringLive .monitoring-time-scope h3 { margin:.1rem 0 .35rem; }
+    #monitoringLive .monitoring-time-details { margin:.5rem 0 1rem; overflow-wrap:anywhere; }
     #monitoringLive .panel-actions select { min-width:0; max-width:100%; }
     #monitoringLive .selected-counter-panel { margin:.9rem 0 1.2rem; }
     #monitoringLive .selected-counter-panel h3 { margin:.1rem 0 .35rem; }
@@ -4610,6 +4613,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
     </div>
     <div id="error" role="alert"></div>
+    <section id="monitoringTimeScope" class="monitoring-time-scope" aria-labelledby="monitoringTimeScopeTitle">
+      <h3 id="monitoringTimeScopeTitle">Shared receipt-time selection</h3>
+    </section>
     <section id="selectedCounterPanel" class="selected-counter-panel" aria-labelledby="selectedCounterTitle">
     <h3 id="selectedCounterTitle">Selected counter</h3>
     <div class="panel-actions selected-counter-controls">
@@ -6175,7 +6181,10 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ]);
     const formatCounterValue = value => new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)
       + (counters.get(selectedKey)?.unit ? ' ' + counters.get(selectedKey).unit : '');
-    const liveTimeNavigation = installLiveTimeNavigation(canvas, () => counters.get(selectedKey)?.points || [], gcRows, draw, formatCounterValue);
+    const timeControlsHost = document.getElementById('monitoringTimeScope');
+    if (!timeControlsHost) throw new Error('The shared monitoring time-scope host is missing.');
+    const liveTimeNavigation = installLiveTimeNavigation(
+      canvas, () => counters.get(selectedKey)?.points || [], gcRows, draw, formatCounterValue, timeControlsHost);
     const retainedCounterSessionCount = () => new Set([
       ...Array.from(memoryCounterKeys).flatMap(key => counters.get(key)?.points.map(point => point.session) || []),
       ...gcRows.map(row => row.session),
