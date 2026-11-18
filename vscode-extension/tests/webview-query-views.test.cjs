@@ -2471,16 +2471,23 @@ test("exception occurrence detail keeps selection, keyboard return and bounded n
 test("live time selection filters only retained observations and GC receipt times and supports reset/inspection", () => {
     const { document, makeContainer } = createDocumentStub();
     const root = makeContainer("live");
+    const timeScope = document.createElement("section");
     const canvas = document.createElement("canvas");
     canvas.getBoundingClientRect = () => ({ width: 1056 });
+    root.appendChild(timeScope);
     root.appendChild(canvas);
     const { LIVE_TIME_NAVIGATION_SCRIPT } = require("../out/liveTimeNavigation.js");
     const install = new Function("document", LIVE_TIME_NAVIGATION_SCRIPT + ";return installLiveTimeNavigation;")(document);
     let points = [0, 100, 200, 300].map(receivedAtMs => ({ receivedAtMs, timestamp: "target-" + receivedAtMs, value: receivedAtMs / 10 }));
     const gcRows = [50, 250].map(receivedAtMs => ({ receivedAtMs, element: document.createElement("tr") }));
     let redraws = 0;
-    const nav = install(canvas, () => points, gcRows, () => redraws++, value => value + " MB");
+    const nav = install(canvas, () => points, gcRows, () => redraws++, value => value + " MB", timeScope);
     const [start, end] = root.querySelectorAll("input");
+    assert.equal(root.children[0], timeScope, "the shared control host precedes the counter chart");
+    assert.equal(timeScope.children[0].className, "monitoring-time-controls");
+    assert.equal(timeScope.children[1].className, "monitoring-time-details");
+    assert.match(timeScope.children[0].children[0].textContent, /selected counter, Memory & GC overview, and GC pauses/,
+        "the affected views are named in visible copy, not only in the collapsed details");
     assert.match(root.textContent, /Start of selected receipt time/);
     assert.match(root.textContent, /End of selected receipt time/);
     assert.match(start.attributes["aria-valuetext"], /0% of retained receipt time/);

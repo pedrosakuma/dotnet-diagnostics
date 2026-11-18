@@ -7,17 +7,19 @@ function installLiveTimeNavigation(
     gcRows: LiveGcRow[],
     refresh: () => void,
     formatValue: (value: number) => string = String,
+    controlsHost: HTMLElement = canvas.parentElement ?? document.body,
 ): { filter: (points: LiveTimePoint[]) => LiveTimePoint[]; update: () => void; selected: () => LiveTimePoint | undefined } {
     let range: { start: number; end: number } | undefined;
     let inspected: LiveTimePoint | undefined;
     const controls = document.createElement("section");
     controls.className = "monitoring-time-controls";
-    controls.setAttribute("aria-label", "Live time selection");
+    controls.setAttribute("aria-label", "Shared monitoring receipt-time selection");
     const explanation = document.createElement("details");
     const explanationTitle = document.createElement("summary");
-    explanationTitle.textContent = "Receipt-time selection";
+    explanationTitle.textContent = "Adjust selected receipt-time bounds";
     const label = document.createElement("p");
-    label.textContent = "Explore retained live data by receipt time (not target event time). Selection does not change collection or retention.";
+    label.textContent = "Receipt-time selection applies to the selected counter, Memory & GC overview, "
+        + "and GC pauses. It uses webview receipt time (not target event time); changing it does not change collection or retention.";
     const windowLabel = document.createElement("label");
     windowLabel.textContent = "Window ";
     const windowSelect = document.createElement("select");
@@ -172,13 +174,12 @@ function installLiveTimeNavigation(
             : Math.max(0, Math.min(1, position + (event.key === "ArrowLeft" ? -0.05 : 0.05)));
         inspect(position);
     });
-    explanation.append(explanationTitle, label, startLabel, endLabel);
-    controls.append(windowLabel, reset, status);
-    canvas.parentElement?.insertBefore(controls, canvas);
+    explanation.append(explanationTitle, startLabel, endLabel);
+    controls.append(label, windowLabel, reset, status);
     const details = document.createElement("section");
     details.className = "monitoring-time-details";
     details.append(detail, explanation);
-    canvas.parentElement?.insertBefore(details, canvas.nextSibling);
+    controlsHost.append(controls, details);
     update();
     return { filter, update, selected: () => inspected };
 }
