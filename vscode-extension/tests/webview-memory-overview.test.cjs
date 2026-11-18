@@ -194,3 +194,27 @@ test("normal, narrow and high-contrast layouts retain headline, temporal visuali
     assert.match(html, /Timeline positions use webview receipt time/);
     assert.match(html, /does not establish object retention, a leak, or causality/);
 });
+
+test("the counter selector stays with its chart while the memory overview remains independent", () => {
+    const html = renderHtml({
+        processId: 42,
+        operatingSystem: "Windows",
+        processArchitecture: "x64",
+        runtimeVersion: "10.0.0",
+        managedEntrypointAssemblyName: "Fixture",
+    }, "nonce", 120);
+    const sessionControls = html.indexOf('class="panel-actions live-session-controls"');
+    const selectedPanel = html.indexOf('id="selectedCounterPanel"');
+    const selector = html.indexOf('id="metric"');
+    const value = html.indexOf('id="value"');
+    const chart = html.indexOf('id="chart"');
+    const overview = html.indexOf('id="memoryOverview"');
+    const gcPauses = html.indexOf("<h3>GC pauses</h3>");
+
+    assert.ok(sessionControls > 0 && sessionControls < selectedPanel);
+    assert.ok(selectedPanel < selector && selector < value && value < chart && chart < overview);
+    assert.ok(overview < gcPauses);
+    assert.match(html, /id="selectedCounterPanel"[^>]*aria-labelledby="selectedCounterTitle"/);
+    assert.match(html, /aria-label="Live counter session"/);
+    assert.match(html, /@media\(max-width:600px\)[\s\S]*?\.selected-counter-controls select \{ width:100%; \}/);
+});
