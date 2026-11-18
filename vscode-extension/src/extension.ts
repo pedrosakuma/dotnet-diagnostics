@@ -4504,6 +4504,9 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     #monitoringLive .monitoring-time-controls > p, #monitoringLive .monitoring-time-controls > details { flex-basis:100%; margin:.2rem 0; overflow-wrap:anywhere; }
     #monitoringLive .monitoring-time-controls details label { display:flex; flex-wrap:wrap; gap:.4rem; margin:.4rem 0; }
     #monitoringLive .panel-actions select { min-width:0; max-width:100%; }
+    #monitoringLive .selected-counter-panel { margin:.9rem 0 1.2rem; }
+    #monitoringLive .selected-counter-panel h3 { margin:.1rem 0 .35rem; }
+    #monitoringLive .selected-counter-controls { margin:.35rem 0 .5rem; }
     #monitoringLive #counterIdentity, #monitoringLive #counterSession, #eventsSubscription, #eventsPresentation { overflow-wrap:anywhere; margin:.4rem 0; }
     #monitoringLive #chartTime { display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; font-size:.85rem; }
     #monitoringLive #chartNote { color:var(--vscode-descriptionForeground); margin:.4rem 0; }
@@ -4523,6 +4526,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     @media(max-width:600px) {
       .workspace-choice, .workspace-selected-state { grid-template-columns:minmax(0, 1fr); }
       .workspace-choice > button { justify-self:start; }
+      #monitoringLive .selected-counter-controls { align-items:stretch; flex-direction:column; }
+      #monitoringLive .selected-counter-controls select { width:100%; }
     }
     ${QUERY_VIEW_STYLES}
     ${WEBVIEW_FIELD_STYLES}
@@ -4601,12 +4606,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <section id="monitoringLive" class="monitoring-view" role="tabpanel" aria-labelledby="monitoringTabLive">
   <section id="resultLive">
     <div id="status" role="status">Ready</div>
-    <div class="panel-actions">
-      <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
+    <div class="panel-actions live-session-controls" aria-label="Live counter session">
       <button id="start">Start</button><button id="stop" disabled>Stop</button>
     </div>
     <div id="error" role="alert"></div>
-    ${MEMORY_OVERVIEW_HTML}
+    <section id="selectedCounterPanel" class="selected-counter-panel" aria-labelledby="selectedCounterTitle">
+    <h3 id="selectedCounterTitle">Selected counter</h3>
+    <div class="panel-actions selected-counter-controls">
+      <label for="metric">Counter</label><select id="metric" aria-label="Select counter"></select>
+    </div>
     <div id="value">Waiting for first observation</div>
     <div id="counterSession" role="status">No counter session started.</div>
     <div id="quality"></div>
@@ -4614,6 +4622,8 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <div id="chartTime"><span id="chartTimeStart"></span><span id="chartTimeEnd"></span></div>
     <p id="chartNote">Auto-scaled value axis, not necessarily zero-based. Lines break at session boundaries and observed sequence gaps; gaps are not zero values.</p>
     <div id="counterIdentity"></div>
+    </section>
+    ${MEMORY_OVERVIEW_HTML}
     <section class="panel">
       <h3>GC pauses</h3>
       <div id="gcHeadline">No GC pauses observed yet.</div>
@@ -6230,6 +6240,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       liveTimeNavigation.update();
       if (updateMemoryOverview) memoryOverview.render();
       const series = counters.get(selectedKey);
+      document.getElementById('selectedCounterTitle').textContent = series ? series.label : 'Selected counter';
       document.getElementById('counterIdentity').textContent = series
         ? selectedKey + ' · ' + series.kind + ' · ' + (series.unit || 'unit not reported') : '';
       document.getElementById('chartTimeStart').textContent = '';
