@@ -8,7 +8,7 @@
 
 export const REQUIRED_PROTOCOL_VERSION = 2;
 export const MIN_CLI_VERSION = "0.29.0";
-export const MIN_FULL_FEATURES_CLI_VERSION = "0.33.0";
+export const MIN_FULL_FEATURES_CLI_VERSION = "0.34.0";
 // `dotnet tool install` has no version-range syntax, so install the latest stable release.
 export const INSTALL_COMMAND = "dotnet tool install -g dotnet-diagnostics-cli";
 export const DEFAULT_CLI_PATH = "dotnet-diagnostics-cli";
@@ -164,7 +164,7 @@ function missingCliIssue(cliPath: string, detail: string): EnvironmentIssue {
         kind: "cli-missing",
         severity: "error",
         message: `dotnet-diagnostics-cli was not found at '${cliPath}' (${detail}).`,
-        guidance: `Install the CLI yourself (the extension never installs tools), or set the machine-scoped dotnetDiagnostics.cliPath to an existing executable. CLI ${MIN_CLI_VERSION} or later supports protocol v2; use ${MIN_FULL_FEATURES_CLI_VERSION} or later for the full extension feature set.`,
+        guidance: `Install the CLI yourself (the extension never installs tools), or set the machine-scoped dotnetDiagnostics.cliPath to an existing executable. CLI ${MIN_CLI_VERSION} or later supports protocol v2; CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later is recommended for the latest capabilities.`,
         command: INSTALL_COMMAND,
     };
 }
@@ -252,8 +252,8 @@ function featureCompatibilityIssue(cliPath: string, cliVersion: string | undefin
     }
 
     const knownVersion = version
-        ? `CLI ${cliVersion} supports protocol v2 and live counters/GC pauses. Earlier captures and drilldowns remain available according to their advertised capabilities; guided comparison, bounded investigation evidence, type-instance navigation and fragmentation projection require the capabilities shipped in CLI ${MIN_FULL_FEATURES_CLI_VERSION}.`
-        : `CLI supports protocol v2, but its version is unavailable or unrecognized; support for diagnostic captures, drilldowns, guided comparison and bounded investigation evidence could not be verified. Use CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later for the full extension feature set.`;
+        ? `CLI ${cliVersion} supports protocol v2 and live counters/GC pauses. Captures and drilldowns remain available according to their advertised capabilities; guided comparison, bounded investigation evidence, type-instance navigation and fragmentation projection require capabilities introduced in CLI 0.33.0, while objective retained-growth comparison requires capabilities shipped in CLI ${MIN_FULL_FEATURES_CLI_VERSION}.`
+        : `CLI supports protocol v2, but its version is unavailable or unrecognized; support for diagnostic captures, drilldowns, guided comparison and retained-growth comparison could not be verified. CLI ${MIN_FULL_FEATURES_CLI_VERSION} or later is recommended for the latest capabilities.`;
     return {
         kind: "feature-compatibility",
         severity: "warning",
@@ -358,7 +358,7 @@ export function summarizeReport(report: EnvironmentReport): string {
     if (report.ready) {
         const warnings = report.issues.length;
         const version = report.cliVersion
-            ? `CLI ${report.cliVersion}${report.issues.some(issue => issue.kind === "feature-compatibility") ? "" : " supports the full extension feature set"} (protocol v${String(report.protocolVersion)})`
+            ? `CLI ${report.cliVersion} (protocol v${String(report.protocolVersion)})`
             : `CLI speaks protocol v${String(report.protocolVersion)}`;
         const targetUnverified = report.doctor?.checks.some(check => check.id === "socket-uid" && check.status === "NotApplicable") ?? false;
         const scope = targetUnverified

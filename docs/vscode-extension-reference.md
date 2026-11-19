@@ -178,11 +178,10 @@ dotnet tool install -g dotnet-diagnostics-cli
 ```
 
 This installs the latest stable release (`dotnet tool install` has no version-range syntax).
-Use CLI **0.31.0 or later** for every feature in extension **0.3.0**. CLI 0.29.0 supports the
-base JSONL protocol-v2 workflows; 0.30.0 adds capture, address-navigation and export requests.
-Allocation exploration and sensitive-value/array-range reads require 0.31.0.
-The handshake reports the CLI version, so Check Environment can distinguish those base
-workflows from the full extension feature set and offer an explicit update action.
+CLI **0.34.0 or later** is recommended for the latest capabilities in extension **0.7.0**.
+CLI 0.29.0 supports the base JSONL protocol-v2 workflows; later versions add optional capabilities.
+Check Environment uses the reported version to suggest an update when appropriate; individual
+workflows also check advertised capabilities and may depend on the target and configuration.
 CLIs without protocol v2 are rejected with a protocol mismatch error.
 Update explicitly with `dotnet tool update -g dotnet-diagnostics-cli`.
 
@@ -696,9 +695,10 @@ diagnostic IPC channel but induces a blocking Gen2 GC pause on the target while 
 ### Incremental retained-memory growth
 
 The live heap Workspace has an optional, collapsed **Incremental retained-memory growth** lens when
-the connected CLI advertises `hello.heapGrowth` version 1. Heap captures remain explicit: opening
-the lens never attaches, starts EventPipe, triggers a GC, or captures evidence. The extension keeps
-an in-memory catalog of at most eight live or GC-dump handles on their owning CLI connections and
+the connected CLI advertises the objective `hello.heapGrowth` version 1 contract, shipped in CLI
+0.34.0. The earlier 0.33.0 growth capability does not include that objective contract. Heap captures
+remain explicit: opening the lens never attaches, starts EventPipe, triggers a GC, or captures
+evidence. The extension keeps an in-memory catalog of at most eight live or GC-dump handles on their owning CLI connections and
 labels unavailable, expired, capacity-evicted, replaced, disconnected, and target-exited entries
 instead of treating them as empty evidence. This catalog is ephemeral and is not Saved Captures,
 investigation persistence, or hidden storage.
@@ -713,9 +713,8 @@ allocation correlations.
 
 The result preserves the CLI's bounded baseline/current retained bytes and instances, signed
 deltas, capture quality, method, compatibility identity and mismatches, counts, assumptions,
-limitations, and unavailable reasons. If independent repeated process-run pairs satisfy the CLI
-contract, the same view shows the reported accepted-pair count, medians, MAD, and bootstrap
-intervals; otherwise the reason those fields are unavailable remains explicit. Allocation samples
+limitations, and unavailable reasons. The extension submits one pair, so repeated-pair medians,
+MAD, and bootstrap intervals are unavailable; the CLI's reason remains explicit. Allocation samples
 are shown separately as traffic and never contribute to retained values. Root/path support is
 reported independently. GC-dump evidence keeps its induced Gen2 observer effect and observed-Gen2
 provenance visible rather than presenting that collection as passive.

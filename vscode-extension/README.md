@@ -45,7 +45,8 @@ composition, multi-evidence correlation or automatic capture is inferred.
 ## Get started
 
 Requires VS Code **1.96+** and the **.NET 10 runtime**, or a self-contained CLI. Install
-`dotnet-diagnostics-cli` **0.33.0+** in the environment where VS Code runs your workspace:
+`dotnet-diagnostics-cli` **0.34.0+** (recommended for the latest capabilities) in the environment
+where VS Code runs your workspace:
 
 ```sh
 dotnet tool install -g dotnet-diagnostics-cli
@@ -53,11 +54,12 @@ dotnet tool install -g dotnet-diagnostics-cli
 
 Already installed? Run `dotnet tool update -g dotnet-diagnostics-cli`. The extension never
 installs or updates the CLI automatically. CLI 0.29.0 supports the base protocol-v2 workflows;
-the environment check identifies older versions and warns when the complete extension feature set
-is unavailable. CLI 0.31.0 added allocation exploration and sensitive-value/array-range reads;
+the environment check identifies older versions and warns when they predate the latest capabilities.
+CLI 0.31.0 added allocation exploration and sensitive-value/array-range reads;
 CLI 0.32.1 added request Activities; CLI 0.33.0 adds guided CPU comparison, bounded investigation
-evidence, heap type-instance navigation, and observed fragmentation projection. Capability checks,
-not version assumptions, continue to gate each optional workflow.
+evidence, heap type-instance navigation, and observed fragmentation projection; CLI 0.34.0 adds
+objective retained-growth evidence. Capability checks, not version assumptions, continue to gate
+each optional workflow.
 
 1. Open **.NET Diagnostics** in the Activity Bar.
 2. Run **Check Environment** to verify host permissions and CLI feature compatibility, then select
@@ -146,7 +148,9 @@ or thread snapshot. It never converts a temporary panel result or a redacted sha
 After two compatible heap captures, expand **Incremental retained-memory growth** in the live
 Workspace and explicitly choose the earlier baseline and later current evidence. The extension
 sends only CLI JSONL queries: the CLI supplies bounded retained byte/instance deltas, supported
-growing-type rankings, and any repeated median/MAD/bootstrap evidence. Allocation traffic, root
+growing-type rankings, and objective evidence for the selected pair. Repeated median/MAD/bootstrap
+statistics are unavailable in this workflow because the extension does not submit repeated pairs.
+Allocation traffic, root
 path availability, GC-dump-induced Gen2 observer effects, evidence identity, assumptions,
 limitations, and unavailable reasons remain separate and visible under disclosure. Selecting a
 supported growing type requests its objective evidence and returns to the canonical current heap
