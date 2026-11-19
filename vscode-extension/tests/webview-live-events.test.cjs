@@ -31,12 +31,31 @@ test("Live Events panel exposes bounded controls and clear sensitive-data framin
     assert.match(html, /Case-insensitive substring across retained provider, event, level/);
     assert.match(html, /\* and \? are literal/);
     assert.match(html, /Search does not restrict upstream collection/);
-    assert.match(html, /bounded memory, not automatically saved or logged/);
+    assert.match(html, /Potentially sensitive data:[\s\S]*Bounded retention:[\s\S]*limited in-memory window[\s\S]*not automatically saved or logged/);
     assert.match(html, /Native Windows ETW is not collected/);
     assert.match(html, /const eventsMaxCount = 2000;/);
     assert.match(html, /const eventsMaxBytes = 8388608;/);
     assert.match(html, /const eventsPageSize = 100;/);
     assert.match(html, /const eventsBatchMaxBytes = 65536;/);
+});
+
+test("Live Events separates stream identity from retained-list controls and remains narrow-width friendly", () => {
+    const stream = /<section class="events-group events-stream"[\s\S]*?<\/section>/.exec(html)?.[0];
+    const retained = /<section class="events-group events-retained"[\s\S]*?<\/section>/.exec(html)?.[0];
+    assert.ok(stream);
+    assert.ok(retained);
+    assert.match(stream, /id="eventsStreamHeading">EventPipe stream/);
+    for (const id of ["startEvents", "stopEvents", "eventsStatus", "eventsSubscription", "eventsQuality"])
+        assert.match(stream, new RegExp(`id="${id}"`));
+    for (const id of ["eventsFollow", "eventsClear", "eventsSearch", "eventsPagination", "eventsTable", "eventDetails"])
+        assert.doesNotMatch(stream, new RegExp(`id="${id}"`));
+    assert.match(retained, /id="eventsRetainedHeading">Retained event list/);
+    for (const id of ["eventsFollow", "eventsClear", "eventsSearch", "eventsPagination", "eventsTable", "eventDetails"])
+        assert.match(retained, new RegExp(`id="${id}"`));
+    assert.doesNotMatch(retained, /id="startEvents"|id="stopEvents"|id="eventsSubscription"/);
+    assert.match(html, /\.events-stream-controls[^}]*flex-wrap:wrap/);
+    assert.match(html, /\.events-retained-actions[^}]*flex-wrap:wrap/);
+    assert.match(html, /\.events-search[^}]*min-width:0/);
 });
 
 test("Monitoring subview navigation is local, keyboard accessible, and does not touch stream state", () => {

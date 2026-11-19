@@ -294,7 +294,7 @@ test("captured data precedes static scope and quantitative summaries stay second
     assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuSamplingDisclaimer"'));
     assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuEvidencePrerequisite"'));
     assert.ok(html.indexOf('id="liveReadConsents"') < html.indexOf('id="captureHeapTable"'));
-    assert.ok(html.indexOf('id="eventsTable"') < html.indexOf('id="eventsSubscription"'));
+    assert.ok(html.indexOf('id="eventsSubscription"') < html.indexOf('id="eventsTable"'));
     assert.match(html, /\.capture-summary, \.exception-capture-summary[\s\S]*?font-size:\.85rem/);
     for (const id of ["captureCpu", "captureAllocation", "captureHeap", "captureThreadSnapshot", "captureExceptions"])
         assert.match(html, new RegExp(`id="${id}"[^>]*aria-label="[^"]+">Capture [^<]+</button>`));

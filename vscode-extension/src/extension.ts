@@ -4498,8 +4498,15 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     .empty { display:none; }
     .statics-form { margin:.5rem 0; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
     .statics-error { color: var(--vscode-errorForeground); }
-    #resultEvents .events-warning { border:1px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; }
+    #resultEvents .events-warning { display:block; border:1px solid var(--vscode-editorWarning-foreground); padding:.4rem .7rem; margin:.6rem 0; overflow-wrap:anywhere; }
     .events-controls { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin:.7rem 0; }
+    #resultEvents .events-group { border:1px solid var(--vscode-panel-border); border-radius:4px; padding:.6rem; margin:.8rem 0; min-width:0; }
+    #resultEvents .events-group h3 { margin:.1rem 0 .5rem; }
+    #resultEvents .events-stream-controls, #resultEvents .events-retained-actions { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; }
+    #resultEvents .events-retained-actions #eventsClear { border-color:var(--vscode-editorWarning-foreground); }
+    #resultEvents .events-search { display:grid; grid-template-columns:minmax(0, 1fr); gap:.25rem; margin:.65rem 0 0; min-width:0; }
+    #resultEvents .events-search input { box-sizing:border-box; width:100%; min-width:0; }
+    #resultEvents .events-retention-note { overflow-wrap:anywhere; margin:.5rem 0; }
     .events-table-wrap { max-height:32rem; overflow:auto; border:1px solid var(--vscode-panel-border); }
     #eventsTable { table-layout:fixed; }
     #eventsTable th:nth-child(1) { width:10rem; }
@@ -4755,43 +4762,53 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     <p class="query-view-provenance">This displayed thread snapshot is temporary. <strong>Capture New Persistent Snapshot</strong> on the process collects separate durable evidence; it never converts this result or a redacted measurement document.</p>
   </section>
     <section id="monitoringEvents" class="monitoring-view" role="tabpanel" aria-labelledby="monitoringTabEvents" hidden>
-  <section id="resultEvents">
-    <small>Event payloads may contain sensitive data</small>
-    <div class="events-controls">
-      <button id="startEvents" type="button">Start Live Events…</button>
-      <button id="stopEvents" type="button" disabled>Stop</button>
-      <button id="eventsFollow" type="button" disabled>Pause following</button>
-      <button id="eventsClear" type="button">Clear</button>
-      <label for="eventsSearch">Search retained events</label><input id="eventsSearch" type="search"
-        maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}" placeholder="Provider, event, level, payload key or value"
-        aria-describedby="eventsSearchHelp" />
-    </div>
-    <small id="eventsSearchHelp">Case-insensitive substring across retained provider, event, level, and
-      payload keys/values; * and ? are literal. Search does not restrict upstream collection.</small>
-    <div id="eventsStatus" role="status">Not running.</div>
-    <div id="eventsPresentation" role="status">Following latest. Newest events appear first.</div>
-    <p id="eventsEmpty">No retained events. Start a stream with the provider, level and keywords documented by your application; zero matches does not confirm target inactivity.</p>
-    <div id="eventsQuality" role="status"></div>
-    <div id="eventsPagination" class="events-controls" hidden>
-      <button id="eventsPrevious" type="button" disabled>Previous</button>
-      <span id="eventsPage" aria-live="polite">No events</span>
-      <button id="eventsNext" type="button" disabled>Next</button>
-    </div>
-    <div class="events-table-wrap">
-      <table id="eventsTable">
-        <thead><tr><th id="eventsHeader0" aria-sort="descending"><button id="eventsSort0" class="evidence-sort" type="button" aria-label="Sort by source time">Source time (UTC)</button></th><th id="eventsHeader1"><button id="eventsSort1" class="evidence-sort" type="button" aria-label="Sort by provider">Provider</button></th><th id="eventsHeader2"><button id="eventsSort2" class="evidence-sort" type="button" aria-label="Sort by event">Event</button></th><th id="eventsHeader3"><button id="eventsSort3" class="evidence-sort" type="button" aria-label="Sort by level">Level</button></th><th id="eventsHeader4"><button id="eventsSort4" class="evidence-sort" type="button" aria-label="Sort by summary">Summary</button></th></tr></thead>
-        <tbody id="eventsBody"></tbody>
-      </table>
-    </div>
-    <small>Search and sorting cover retained events only, before pagination. No match is not evidence
-      that no matching event was observed outside the retained window or configured subscription.</small>
-    <div id="eventsQualityDetail"></div>
-    <section id="eventDetails" aria-label="Selected event details"><p>Select an event to inspect its bounded payload.</p></section>
-    <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
-    <p class="query-view-provenance">Events are retained only in bounded memory, not automatically saved or logged.
-      Native Windows ETW is not collected. Pausing does not stop collection or acknowledgements.
-      Retained rows can include earlier streams; keyword masks are signed decimal.</p>
-  </section>
+    <section id="resultEvents">
+      <p class="events-warning" role="note"><strong>Potentially sensitive data:</strong> Event payloads may contain application data.
+        <strong>Bounded retention:</strong> events stay in a limited in-memory window and are not automatically saved or logged.
+        Clear removes only the retained list; pausing the presentation does not stop collection or acknowledgements.</p>
+      <section class="events-group events-stream" aria-labelledby="eventsStreamHeading">
+        <h3 id="eventsStreamHeading">EventPipe stream</h3>
+        <div class="events-stream-controls">
+          <button id="startEvents" type="button">Start Live Events…</button>
+          <button id="stopEvents" type="button" disabled>Stop</button>
+        </div>
+        <div id="eventsStatus" role="status">Not running.</div>
+        <div id="eventsSubscription">Start Live Events to choose explicit provider names, level and keyword mask.</div>
+        <div id="eventsQuality" role="status"></div>
+        <div id="eventsQualityDetail"></div>
+        <p class="query-view-provenance events-retention-note">Native Windows ETW is not collected.
+          Retained rows can include earlier streams; keyword masks are signed decimal.</p>
+      </section>
+      <section class="events-group events-retained" aria-labelledby="eventsRetainedHeading">
+        <h3 id="eventsRetainedHeading">Retained event list</h3>
+        <div class="events-retained-actions">
+          <button id="eventsFollow" type="button" disabled>Pause following</button>
+          <button id="eventsClear" type="button">Clear retained list</button>
+        </div>
+        <label class="events-search" for="eventsSearch">Search retained events
+          <input id="eventsSearch" type="search" maxlength="${LIVE_EVENT_SEARCH_MAX_CHARS}"
+            placeholder="Provider, event, level, payload key or value" aria-describedby="eventsSearchHelp" />
+          <small id="eventsSearchHelp">Case-insensitive substring across retained provider, event, level, and
+            payload keys/values; * and ? are literal. Search does not restrict upstream collection.</small>
+        </label>
+        <div id="eventsPresentation" role="status">Following latest. Newest events appear first.</div>
+        <p id="eventsEmpty">No retained events. Start a stream with the provider, level and keywords documented by your application; zero matches does not confirm target inactivity.</p>
+        <div id="eventsPagination" class="events-controls" hidden>
+          <button id="eventsPrevious" type="button" disabled>Previous</button>
+          <span id="eventsPage" aria-live="polite">No events</span>
+          <button id="eventsNext" type="button" disabled>Next</button>
+        </div>
+        <div class="events-table-wrap">
+          <table id="eventsTable">
+            <thead><tr><th id="eventsHeader0" aria-sort="descending"><button id="eventsSort0" class="evidence-sort" type="button" aria-label="Sort by source time">Source time (UTC)</button></th><th id="eventsHeader1"><button id="eventsSort1" class="evidence-sort" type="button" aria-label="Sort by provider">Provider</button></th><th id="eventsHeader2"><button id="eventsSort2" class="evidence-sort" type="button" aria-label="Sort by event">Event</button></th><th id="eventsHeader3"><button id="eventsSort3" class="evidence-sort" type="button" aria-label="Sort by level">Level</button></th><th id="eventsHeader4"><button id="eventsSort4" class="evidence-sort" type="button" aria-label="Sort by summary">Summary</button></th></tr></thead>
+            <tbody id="eventsBody"></tbody>
+          </table>
+        </div>
+        <small>Search and sorting cover retained events only, before pagination. No match is not evidence
+          that no matching event was observed outside the retained window or configured subscription.</small>
+        <section id="eventDetails" aria-label="Selected event details"><p>Select an event to inspect its bounded payload.</p></section>
+      </section>
+    </section>
     </section>
   </section>
 
