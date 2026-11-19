@@ -293,7 +293,7 @@ test("captured data precedes static scope and quantitative summaries stay second
     assert.ok(html.indexOf('id="quality"') < html.indexOf('id="chart"'), "active chart loss stays visible before data");
     assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuSamplingDisclaimer"'));
     assert.ok(html.indexOf('id="cpuQueryViews"') < html.indexOf('id="cpuEvidencePrerequisite"'));
-    assert.ok(html.indexOf('id="captureHeapTable"') < html.indexOf("Remembered permissions apply"));
+    assert.ok(html.indexOf('id="liveReadConsents"') < html.indexOf('id="captureHeapTable"'));
     assert.ok(html.indexOf('id="eventsTable"') < html.indexOf('id="eventsSubscription"'));
     assert.match(html, /\.capture-summary, \.exception-capture-summary[\s\S]*?font-size:\.85rem/);
     for (const id of ["captureCpu", "captureAllocation", "captureHeap", "captureThreadSnapshot", "captureExceptions"])
@@ -2915,11 +2915,8 @@ test("heap view switching retains table filters and selection, surfaces hidden f
 
 test("live-read permissions display scoped grants, bounded history and a revoke action without sending grants to the host", () => {
     const { document, makeContainer } = createDocumentStub();
-    const root = makeContainer("liveReadConsents");
-    const summary = document.createElement("summary");
-    root.appendChild(summary);
+    const status = makeContainer("liveReadConsentStatus");
     const revoke = makeContainer("revokeLiveReads");
-    makeContainer("liveReadConsentStatus");
     const history = makeContainer("liveReadConsentHistory");
     const messages = [];
     const { LIVE_READ_CONSENT_SCRIPT } = require("../out/liveReadConsent.js");
@@ -2928,17 +2925,18 @@ test("live-read permissions display scoped grants, bounded history and a revoke 
     render({ grants: ["object"], history: Array.from({ length: 40 }, (_, i) => ({
         operation: "object", decision: "allowed once", timestamp: "t" + i,
     })) });
-    assert.match(summary.textContent, /Object remembered/);
+    assert.match(status.textContent, /Object remembered/);
     assert.equal(revoke.getAttribute("aria-disabled"), "false");
     assert.equal(history.children.length, 30);
     revoke.listeners.click();
     assert.deepEqual(messages, [{ type: "revokeLiveReads" }]);
     render({ grants: [], history: [] });
-    assert.match(summary.textContent, /none remembered/);
+    assert.match(status.textContent, /none remembered/);
     assert.equal(revoke.getAttribute("aria-disabled"), "true");
     assert.equal(history.children.length, 0);
     const live = renderHtml(target, "nonce", 120);
     const dump = renderDumpAnalysisHtml("fixture.dmp", "nonce");
     assert.match(live, /id="liveReadConsents"/);
+    assert.match(live, /dump reads are offline, and navigating an already-loaded result is local/);
     assert.doesNotMatch(dump, /id="liveReadConsents"/);
 });
