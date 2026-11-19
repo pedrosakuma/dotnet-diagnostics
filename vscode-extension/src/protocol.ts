@@ -488,6 +488,34 @@ export function isQueryResult(value: unknown): value is QueryResult {
         && typeof value.view === "string";
 }
 
+/** Restores the query envelope when a view-specific CLI result keeps it on the outer frame. */
+export function parseQueryResultFrame(frame: ProtocolFrame): QueryResult | undefined {
+    if (frame.view !== "growth") {
+        return isQueryResult(frame.result) ? frame.result : undefined;
+    }
+    if (typeof frame.handle !== "string"
+        || typeof frame.baselineHandle !== "string"
+        || !isRecord(frame.result)) {
+        return undefined;
+    }
+
+    const result = frame.result;
+    if ((result.handle !== undefined && result.handle !== frame.handle)
+        || (result.baselineHandle !== undefined && result.baselineHandle !== frame.baselineHandle)
+        || (result.view !== undefined && result.view !== frame.view)
+        || (result.currentHandle !== undefined && result.currentHandle !== frame.handle)) {
+        return undefined;
+    }
+
+    const normalized = {
+        ...result,
+        handle: frame.handle,
+        baselineHandle: frame.baselineHandle,
+        view: frame.view,
+    };
+    return isQueryResult(normalized) ? normalized : undefined;
+}
+
 function isThreadSnapshotLock(value: unknown): value is ThreadSnapshotLock {
     return isRecord(value)
         && typeof value.ownerManagedThreadId === "number"

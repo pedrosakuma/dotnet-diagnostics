@@ -61,15 +61,28 @@ export class LiveReadConsent {
     }
 }
 
-export const LIVE_READ_CONSENT_HTML = `<details id="liveReadConsents">
-<summary>Live-read permissions: none remembered</summary>
-<p>Remembered permissions apply separately to type-instance, Object and GC root reads for this heap snapshot and CLI connection only.
-Reads can suspend the target and expose sensitive data. A new heap capture or closed panel ends these grants.
-Captures and exports still need their own acknowledgement.</p>
-<button id="revokeLiveReads" type="button" aria-disabled="true" title="No remembered live-read permission.">Revoke remembered live reads</button>
-<p id="liveReadConsentStatus" role="status"></p>
-<ol id="liveReadConsentHistory"></ol>
-</details>`;
+export const LIVE_READ_CONSENT_HTML = `<section id="liveReadConsents" class="live-read-permissions" aria-label="Live-read permissions">
+  <div class="live-read-permission-bar">
+    <p id="liveReadConsentStatus" role="status" aria-live="polite">Live target-read permissions: none remembered.</p>
+    <button id="revokeLiveReads" type="button" aria-disabled="true" title="No remembered live-read permission.">Revoke remembered live reads</button>
+  </div>
+  <p class="live-read-permission-scope">Remembered grants apply separately to live type-instance, Object and GC root reads for this snapshot and CLI connection only. A live read can suspend the target and expose sensitive data; dump reads are offline, and navigating an already-loaded result is local. New heap captures and closed panels end these grants. Captures and exports need separate acknowledgement. Permission history retains the latest 30 decisions.</p>
+  <details>
+    <summary>Live-read permission history</summary>
+    <ol id="liveReadConsentHistory"></ol>
+  </details>
+</section>`;
+
+export const LIVE_READ_CONSENT_STYLES = `
+.live-read-permissions{margin:.5rem 0}
+.live-read-permission-bar{position:sticky;top:3rem;z-index:1;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:.45rem;padding:.35rem 0;background:var(--vscode-editor-background);border-block:1px solid var(--vscode-panel-border)}
+.live-read-permission-bar p{min-width:0;margin:0;overflow-wrap:anywhere}
+.live-read-permission-bar button{min-height:2rem}
+.live-read-permission-scope{margin:.25rem 0;color:var(--vscode-descriptionForeground);overflow-wrap:anywhere}
+.live-read-permissions details{margin:.3rem 0}
+.live-read-permissions li{overflow-wrap:anywhere}
+@media(max-width:480px){.live-read-permission-bar{align-items:stretch}.live-read-permission-bar button{width:100%}}
+`;
 
 export const LIVE_READ_CONSENT_SCRIPT = `
 document.getElementById('revokeLiveReads').addEventListener('click', () => vscode.postMessage({ type: 'revokeLiveReads' }));
@@ -80,9 +93,9 @@ function renderLiveReadConsent(message) {
   const revoke = document.getElementById('revokeLiveReads');
   revoke.setAttribute('aria-disabled', String(!grants.length));
   revoke.title = grants.length ? '' : 'No remembered live-read permission.';
-  root.querySelector('summary').textContent = 'Live-read permissions: ' + (names.length ? names.join(', ') + ' remembered' : 'none remembered');
   document.getElementById('liveReadConsentStatus').textContent = names.length
-    ? 'Active for the current heap snapshot session only: ' + names.join(', ') : 'No remembered live-read permission.';
+    ? 'Live target-read permissions for this heap snapshot session: ' + names.join(', ') + ' remembered.'
+    : 'Live target-read permissions: none remembered.';
   const history = document.getElementById('liveReadConsentHistory');
   history.replaceChildren();
   for (const entry of (Array.isArray(message.history) ? message.history : []).slice(-30)) {
