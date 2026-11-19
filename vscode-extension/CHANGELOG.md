@@ -5,9 +5,22 @@ versioned independently from the CLI and the .NET packages.
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-19
+
+CLI **0.34.0 or later** is recommended for the latest capabilities, including objective
+retained-growth evidence. Earlier protocol-v2 CLIs continue to support compatible workflows;
+the growth capability in CLI 0.33.0 lacks the objective contract required by this extension.
+
+- Keep the heap capture action, current result and live-read permission controls together, with
+  retained-growth comparison as a separate multi-snapshot workflow. Normalize retained-growth
+  comparison responses while preserving handle ownership and live-read consent.
+- Clarify Live Events stream controls and subscription identity separately from retained-list
+  search, sorting, pagination and presentation controls.
+- Group the counter selector with its chart and make receipt-time selection's shared scope over the
+  counter, Memory & GC overview and GC pauses explicit.
 - Add an optional incremental retained-memory growth lens over the CLI's advertised bounded JSONL
   contract. Explicitly select compatible earlier/later live or GC-dump evidence, keep retained
-  bytes/instances and repeated median/MAD/bootstrap evidence CLI-owned, separate allocation traffic
+  bytes/instances and any reported statistics CLI-owned, separate allocation traffic
   and GC-dump observer effects, and expose identity, method, assumptions, limitations, root/path
   availability and unavailable reasons. Rank types only from supported quality, then route a
   selected type to the canonical heap explorer and its bounded live drilldowns. Handles remain

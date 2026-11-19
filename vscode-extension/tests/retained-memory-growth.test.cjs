@@ -144,6 +144,11 @@ test("heap-growth capability, explicit frame and pair compatibility preserve the
     assert.equal(growth.supportsHeapGrowth(capability), true);
     assert.equal(growth.supportsHeapGrowth({ ...capability, storeCapacity: 1 }), true);
     assert.equal(growth.supportsHeapGrowth({ ...capability, maxAttempts: 9 }), false);
+    for (const field of ["objectiveTargetField", "comparisonPairsField", "objectiveSchema"]) {
+        const incomplete = { ...capability };
+        delete incomplete[field];
+        assert.equal(growth.supportsHeapGrowth(incomplete), false, `missing ${field}`);
+    }
     assert.deepEqual(growth.buildHeapGrowthFrame("r1", "current", "baseline", "instances", "Sample.Cache"), {
         type: "query",
         requestId: "r1",
