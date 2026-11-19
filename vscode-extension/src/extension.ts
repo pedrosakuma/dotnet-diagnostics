@@ -23,7 +23,12 @@ import {
 import { WEBVIEW_BUTTON_STYLES, WEBVIEW_FIELD_STYLES } from "./webviewFields";
 import { LIVE_TIME_NAVIGATION_SCRIPT } from "./liveTimeNavigation";
 import { MEMORY_OVERVIEW_HTML, MEMORY_OVERVIEW_SCRIPT, MEMORY_OVERVIEW_STYLES } from "./memoryOverview";
-import { LiveReadConsent, LIVE_READ_CONSENT_HTML, LIVE_READ_CONSENT_SCRIPT } from "./liveReadConsent";
+import {
+    LiveReadConsent,
+    LIVE_READ_CONSENT_HTML,
+    LIVE_READ_CONSENT_SCRIPT,
+    LIVE_READ_CONSENT_STYLES,
+} from "./liveReadConsent";
 import { TypeInstanceNavigationController, type TypeInstanceNavigationHost } from "./snapshotNavigation";
 import { ACTION_AVAILABILITY_SCRIPT, ACTION_AVAILABILITY_STYLES, PROFILE_ACTIONS_SCRIPT } from "./actionAvailability";
 import {
@@ -53,7 +58,7 @@ import {
     isExceptionCaptureResult,
     isDumpHeapCaptureResult,
     isHeapCaptureResult,
-    isQueryResult,
+    parseQueryResultFrame,
     isThreadCaptureResult,
     buildQueryFrame,
     type QueryNavigation,
@@ -3034,8 +3039,9 @@ class CounterPanelController implements vscode.Disposable {
                 if (!pending) {
                     break;
                 }
-                if (isQueryResult(frame.result)) {
-                    pending.resolve(frame.result);
+                const result = parseQueryResultFrame(frame);
+                if (result) {
+                    pending.resolve(result);
                 } else {
                     pending.reject(new Error("The CLI returned a query result in an unexpected shape."));
                 }
@@ -3999,8 +4005,9 @@ class DumpAnalysisPanelController implements vscode.Disposable {
                 if (!pending) {
                     break;
                 }
-                if (isQueryResult(frame.result)) {
-                    pending.resolve(frame.result);
+                const result = parseQueryResultFrame(frame);
+                if (result) {
+                    pending.resolve(result);
                 } else {
                     pending.reject(new Error("The CLI returned a query result in an unexpected shape."));
                 }
@@ -4430,6 +4437,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
     ${ACTION_AVAILABILITY_STYLES}
     ${MEMORY_OVERVIEW_STYLES}
     ${RETAINED_MEMORY_GROWTH_STYLES}
+    ${LIVE_READ_CONSENT_STYLES}
     ${INVESTIGATION_LENS_STYLES}
     .result-tabs, .monitoring-tabs { display:flex; gap:.2rem; overflow-x:auto; padding:.45rem 0; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-panel-border); }
     .result-tabs { position:sticky; top:0; z-index:2; }
@@ -4709,7 +4717,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
   <section id="resultHeap" class="result-tab-panel" role="tabpanel" aria-labelledby="resultTabHeap" hidden>
     <div class="panel-actions"><button id="captureHeap" type="button" aria-label="Capture heap snapshot">Capture heap snapshot…</button></div>
     <div id="captureHeapStatus" role="status" aria-live="polite"></div>
-    ${RETAINED_MEMORY_GROWTH_HTML}
+    ${LIVE_READ_CONSENT_HTML}
     <div id="captureHeapResult" class="empty">
       <div id="captureHeapHeadline"></div>
       <div id="heapWorkspace" class="heap-workspace" data-focused="false">
@@ -4727,7 +4735,7 @@ export function renderHtml(target: TargetProcess, nonce: string, historyDuration
       </div>
     </div>
     <p class="query-view-provenance">This displayed heap snapshot is temporary. <strong>Capture New Persistent Snapshot</strong> on the process collects separate durable evidence; it never converts this result or a redacted measurement document.</p>
-    ${LIVE_READ_CONSENT_HTML}
+    ${RETAINED_MEMORY_GROWTH_HTML}
   </section>
   <section id="resultThreads" hidden>
     <div class="panel-actions"><button id="captureThreadSnapshot" type="button" aria-label="Capture thread snapshot">Capture thread snapshot…</button></div>

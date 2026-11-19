@@ -406,8 +406,9 @@ ${growthRankingSupported.toString()}
 ${renderRetainedGrowth.toString()}`;
 
 export const RETAINED_MEMORY_GROWTH_HTML = `
-<details id="retainedGrowthLens" class="retained-growth-lens">
-  <summary>Incremental retained-memory growth</summary>
+<details id="retainedGrowthLens" class="retained-growth-lens" aria-label="Separate multi-snapshot retained-memory comparison">
+  <summary>Compare retained-memory growth across heap snapshots</summary>
+  <p>Separate multi-snapshot analysis: choose baseline and current snapshots to compare retained memory. This workflow does not replace the current heap snapshot.</p>
   <div class="retained-growth-controls">
     <label>Baseline (earlier)<select id="retainedGrowthBaseline"></select></label>
     <label>Current (later)<select id="retainedGrowthCurrent"></select></label>

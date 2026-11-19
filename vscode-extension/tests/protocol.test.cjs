@@ -5,6 +5,7 @@ const {
     describeStreamExit,
     parseProcessList,
     parseProtocolFrame,
+    parseQueryResultFrame,
     buildQueryFrame,
     isGcCollection,
     isCpuSampleSummary,
@@ -78,6 +79,46 @@ test("protocol frame parser requires a typed JSON object", () => {
         });
     });
     assert.throws(() => parseProtocolFrame("[]"), /string type/);
+});
+
+test("heap-growth query result restores metadata projected on the outer frame", () => {
+    const result = parseQueryResultFrame({
+        type: "query",
+        requestId: "query1",
+        handle: "current",
+        baselineHandle: "baseline",
+        view: "growth",
+        result: {
+            baselineHandle: "baseline",
+            currentHandle: "current",
+            processId: 123,
+            growers: [],
+        },
+    });
+
+    assert.deepEqual(result, {
+        handle: "current",
+        baselineHandle: "baseline",
+        view: "growth",
+        currentHandle: "current",
+        processId: 123,
+        growers: [],
+    });
+});
+
+test("heap-growth query result rejects conflicting outer and inner handles", () => {
+    assert.equal(parseQueryResultFrame({
+        type: "query",
+        handle: "current",
+        baselineHandle: "baseline",
+        view: "growth",
+        result: { baselineHandle: "baseline", currentHandle: "other", growers: [] },
+    }), undefined);
+});
+
+test("ordinary query results retain their existing envelope", () => {
+    const result = { handle: "snapshot", view: "roots-by-kind", rootsByKind: [] };
+    assert.equal(parseQueryResultFrame({ type: "query", result }), result);
 });
 
 test("non-JSON stream output produces concise CLI compatibility guidance", () => {

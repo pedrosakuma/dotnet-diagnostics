@@ -39,6 +39,24 @@ test("live snapshot panel distinguishes temporary display from a new persistent 
     assert.match(html, /This displayed thread snapshot is temporary/);
 });
 
+test("heap capture, live-read state and current result stay grouped before separate multi-snapshot analysis", () => {
+    const html = renderHtml(target, "nonce123", 120);
+    const positions = [
+        'id="captureHeap"',
+        'id="captureHeapStatus"',
+        'id="liveReadConsents"',
+        'id="captureHeapResult"',
+        "This displayed heap snapshot is temporary",
+        'id="retainedGrowthLens"',
+    ].map(marker => html.indexOf(marker));
+
+    assert.ok(positions.every(position => position >= 0), "expected every heap workspace section");
+    assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+    assert.match(html, /Separate multi-snapshot analysis: choose baseline and current snapshots/);
+    assert.match(html, /\.live-read-permission-bar\{position:sticky;top:3rem/);
+    assert.match(html, /@media\(max-width:480px\)\{\.live-read-permission-bar/);
+});
+
 // Evaluates the real, extracted renderHeapCapture implementation (plus its parseTimeSpanToMs
 // dependency and a minimal DOM stub) so this test exercises exactly what ships to the browser,
 // not a hand-copied stand-in. Mirrors the extraction technique in webview-gc-pause.test.cjs.
