@@ -11,6 +11,7 @@ TEXT = (WORKFLOWS / "release.yml").read_text()
 JOBS = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
                        TEXT.split("\njobs:\n", 1)[1], re.M | re.S))
 PRODUCTS = ("pack-tool", "publish-binaries", "release", "publish-nuget")
+RECOVERY = "publish-existing-nuget"
 
 
 def condition(job):
@@ -46,15 +47,18 @@ def evaluate(expression, values):
 
 class ProducerOnlyWorkflowTests(unittest.TestCase):
     def test_complete_job_inventory_and_explicit_gates(self):
-        self.assertEqual(set(JOBS), {"portable-native", *PRODUCTS})
+        self.assertEqual(set(JOBS), {"portable-native", RECOVERY, *PRODUCTS})
         for job in PRODUCTS:
             self.assertIn("!inputs.producer_only", condition(job))
         self.assertEqual(
             condition("portable-native"),
             "github.event_name == 'workflow_dispatch' && "
+            "!inputs.publish_existing_nuget && "
             "(inputs.producer_only || inputs.include_portable_worker) || "
             "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
         )
+        self.assertIn("!inputs.publish_existing_nuget", condition("pack-tool"))
+        self.assertIn("!inputs.publish_existing_nuget", condition("publish-binaries"))
 
     def test_mode_matrix_preserves_normal_conditions_and_disables_products(self):
         scenarios = (("push", "refs/tags/v1.2.3"), ("push", "refs/heads/main"),
@@ -65,6 +69,7 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
             with self.subTest(event=event, ref=ref, producer=producer, include=include, state=state):
                 values = {"github.event_name": event, "github.ref": ref,
                           "inputs.producer_only": producer, "inputs.include_portable_worker": include,
+                          "inputs.publish_existing_nuget": False,
                           "success": state == "success", "failure": state == "failure",
                           "cancelled": state == "cancelled"}
                 active = {job: bool(evaluate(condition(job), values)) for job in JOBS}
@@ -81,6 +86,22 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
                     for job in ("release", "publish-nuget"):
                         self.assertEqual(active[job], state == "success" and event == "push" and ref.startswith("refs/tags/v"))
 
+    def test_existing_nuget_recovery_disables_build_and_release_jobs(self):
+        values = {
+            "github.event_name": "workflow_dispatch",
+            "github.ref": "refs/heads/main",
+            "inputs.producer_only": False,
+            "inputs.include_portable_worker": True,
+            "inputs.publish_existing_nuget": True,
+            "success": True,
+            "failure": False,
+            "cancelled": False,
+        }
+        active = {job: bool(evaluate(condition(job), values)) for job in JOBS}
+        self.assertTrue(active[RECOVERY])
+        self.assertFalse(active["portable-native"])
+        self.assertFalse(any(active[job] for job in PRODUCTS))
+
     def test_permissions_and_reusable_call_are_least_privilege(self):
         global_permissions = TEXT.split("\npermissions:\n", 1)[1].split("\njobs:\n", 1)[0].strip()
         self.assertEqual(global_permissions, "contents: read")
@@ -89,7 +110,8 @@ class ProducerOnlyWorkflowTests(unittest.TestCase):
             "pack-tool": {"contents": "read", "attestations": "write", "id-token": "write"},
             "publish-binaries": {"contents": "read", "attestations": "write", "id-token": "write"},
             "release": {"contents": "write"},
-            "publish-nuget": {"contents": "read"},
+            "publish-nuget": {"contents": "read", "id-token": "write"},
+            RECOVERY: {"attestations": "read", "contents": "read", "id-token": "write"},
         }
         for job, permissions in expected.items():
             block = re.search(r"^    permissions:\n(.*?)(?=^    \S|\Z)", JOBS[job], re.M | re.S)[1]
