@@ -3459,7 +3459,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         }
     }
 
-    [WindowsOnlyFact("ContentionStart/Stop EventPipe events are not emitted by current non-Windows runtimes in this test environment.", Timeout = 60_000)]
+    [Fact(Timeout = 60_000)]
     public async Task Contention_CollectorResolvesManagedCallSite_FromBadCodeSample()
     {
         await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
@@ -3491,7 +3491,7 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
             && sample.CallSiteModule.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase));
     }
 
-    [WindowsOnlyFact("ContentionStart/Stop EventPipe events are not emitted by current non-Windows runtimes in this test environment.", Timeout = 60_000)]
+    [Fact(Timeout = 60_000)]
     public async Task Contention_HandleEnablesDrilldownViews()
     {
         await using var badSample = await StartPublishedSampleAsync("BadCodeSample");

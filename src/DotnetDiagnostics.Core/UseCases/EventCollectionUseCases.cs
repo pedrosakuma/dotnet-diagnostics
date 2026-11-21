@@ -926,22 +926,15 @@ public static class EventCollectionUseCases
                     string summary;
                     if (snapshot.TotalEvents == 0)
                     {
-                        if (OperatingSystem.IsLinux())
-                        {
-                            summary = $"No lock contention events were captured in {context.DurationSeconds}s. Linux runtimes do not emit ContentionStart/Stop over EventPipe (known limitation). Use alternative signals: 'monitor-lock-contention-count' counter + thread snapshots to identify blocked threads.";
-                            hints.Add(new NextActionHint(
-                                "collect_events",
-                                "Collect counters to see if monitor-lock-contention-count is rising (confirms contention exists even without events).",
-                                new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = context.ProcessId, ["durationSeconds"] = 5, ["providers"] = (IReadOnlyList<string>)["System.Runtime"] }));
-                            hints.Add(new NextActionHint(
-                                "collect_thread_snapshot",
-                                "Take a thread snapshot then use query_snapshot(view='lock-graph') to see contended SyncBlocks with waiter counts.",
-                                new Dictionary<string, object?> { ["processId"] = context.ProcessId }));
-                        }
-                        else
-                        {
-                            summary = $"No lock contention events were captured in {context.DurationSeconds}s. Start the collection before the workload and retry if you expected waits.";
-                        }
+                        summary = $"No lock contention events were captured in {context.DurationSeconds}s. Start the collection before the workload and retry if you expected waits; runtime support and event delivery can vary.";
+                        hints.Add(new NextActionHint(
+                            "collect_events",
+                            "Collect counters to see if monitor-lock-contention-count is rising even though no contention events were delivered.",
+                            new Dictionary<string, object?> { ["kind"] = "counters", ["processId"] = context.ProcessId, ["durationSeconds"] = 5, ["providers"] = (IReadOnlyList<string>)["System.Runtime"] }));
+                        hints.Add(new NextActionHint(
+                            "collect_thread_snapshot",
+                            "Take a thread snapshot then use query_snapshot(view='lock-graph') to identify blocked threads and contended SyncBlocks.",
+                            new Dictionary<string, object?> { ["processId"] = context.ProcessId }));
                     }
                     else
                     {

@@ -253,14 +253,7 @@ public sealed class EventPipeContentionCollector : IContentionCollector, IStream
 
         if (totalEvents == 0)
         {
-            if (OperatingSystem.IsLinux())
-            {
-                notes.Add("No lock contention events were observed in the collection window. Current Linux runtimes may not emit ContentionStart/Stop over EventPipe even when monitor-lock-contention counters rise.");
-            }
-            else
-            {
-                notes.Add("No lock contention events were observed in the collection window.");
-            }
+            notes.Add("No lock contention events were observed in the collection window. Event delivery depends on runtime support and workload timing; use monitor-lock-contention counters and a thread snapshot if contention was expected.");
         }
 
         if (topEvents.DroppedCount > 0)
