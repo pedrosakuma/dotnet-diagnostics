@@ -182,7 +182,7 @@ jobs:
     name: Publish single-file binary (${{ matrix.rid }})
     runs-on: ${{ matrix.os }}
     needs: pack-tool
-    if: ${{ !inputs.producer_only && success() }}
+    if: ${{ !inputs.producer_only && !inputs.publish_existing_nuget && success() }}
     permissions:
       contents: read
       attestations: write
