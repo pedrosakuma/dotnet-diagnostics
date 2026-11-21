@@ -2946,8 +2946,9 @@ and groups the captured waits by contended call site and owner thread.
 
 **Notes:**
 
-- Direct live EventPipe streams are not TraceLog-backed, so managed call-site attribution is unavailable and `byCallSite` groups those waits under `(unknown)`. A future trace-file-backed path may provide attribution without changing the handle shape.
-- On current Linux runtimes, `ContentionStart` / `ContentionStop` may not be emitted over EventPipe even when `monitor-lock-contention-count` rises; the collector surfaces that caveat in `notes` when the window is empty.
+- The collector writes a bounded temporary `.nettrace`, requests runtime rundown, and parses it through `TraceLog` so managed contention frames resolve to module and method names when metadata is available.
+- Call-site resolution is supported on current .NET 10 Windows and Linux runtimes. When an event has no resolvable stack or module metadata, the row remains `(unknown)` and `notes` names the reason.
+- An empty window is not proof that contention was absent. Start collection before the workload; if `monitor-lock-contention-count` rises without delivered events, use a thread snapshot and `query_snapshot(view="lock-graph")`.
 
 
 ## `collect_events(kind="startup")`

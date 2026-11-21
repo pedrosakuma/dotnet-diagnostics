@@ -3459,8 +3459,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         }
     }
 
-    [WindowsOnlyFact("ContentionStart/Stop EventPipe events are not emitted by current non-Windows runtimes in this test environment.", Timeout = 60_000)]
-    public async Task Contention_CollectorAggregatesLockStorm_FromBadCodeSample()
+    [Fact(Timeout = 60_000)]
+    public async Task Contention_CollectorResolvesManagedCallSite_FromBadCodeSample()
     {
         await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
         using var http = new HttpClient { BaseAddress = new Uri(badSample.BaseUrl) };
@@ -3469,7 +3469,8 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         var driver = Task.Run(async () =>
         {
             await Task.Delay(TimeSpan.FromMilliseconds(1200));
-            using var response = await http.GetAsync("/lock-storm?seconds=3&blockers=8");
+            using var response = await http.GetAsync(
+                "/contention-shape?shape=dominant&milliseconds=3000&locks=1&contenders=16");
             response.EnsureSuccessStatusCode();
         });
 
@@ -3484,24 +3485,13 @@ public class LiveCoreClrProcessTests(Xunit.Abstractions.ITestOutputHelper output
         snapshot.DistinctMonitors.Should().BeGreaterThan(0);
         snapshot.TotalContentionDuration.Should().BeGreaterThan(TimeSpan.Zero);
         snapshot.MaxContentionDuration.Should().BeGreaterThan(TimeSpan.Zero);
-        var attributed = snapshot.Events.Where(sample =>
-            !string.Equals(sample.CallSiteMethod, "(unknown)", StringComparison.Ordinal)
-            || !string.Equals(sample.CallSiteModule, "(unknown)", StringComparison.Ordinal)).ToList();
-        if (attributed.Count > 0)
-        {
-            attributed.Should().Contain(sample =>
-                sample.CallSiteMethod.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase)
-                || sample.CallSiteModule.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase));
-        }
-        else
-        {
-            snapshot.Notes.Should().Contain(
-                note => note.Contains("TraceLog-backed", StringComparison.OrdinalIgnoreCase),
-                "unavailable live call-site attribution must be explicit");
-        }
+        snapshot.Events.Should().Contain(sample =>
+            sample.CallSiteMethod.Contains("ContentionShapeFixture", StringComparison.Ordinal)
+            && sample.CallSiteMethod.Contains("RunAsync", StringComparison.Ordinal)
+            && sample.CallSiteModule.Contains("BadCodeSample", StringComparison.OrdinalIgnoreCase));
     }
 
-    [WindowsOnlyFact("ContentionStart/Stop EventPipe events are not emitted by current non-Windows runtimes in this test environment.", Timeout = 60_000)]
+    [Fact(Timeout = 60_000)]
     public async Task Contention_HandleEnablesDrilldownViews()
     {
         await using var badSample = await StartPublishedSampleAsync("BadCodeSample");
